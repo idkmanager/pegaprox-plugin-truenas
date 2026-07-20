@@ -17,7 +17,7 @@ proves ``vm.query`` 404s/errors and ``virt.instance.query`` is what answers
 instead — don't build it blind now.
 """
 
-from core.subsystem import Subsystem
+from core.subsystem import Subsystem, safe_call
 
 
 def list_apps(conn):
@@ -35,8 +35,14 @@ class AppsVmsSubsystem(Subsystem):
         """Returns a dict ({'apps': [...], 'vms': [...]}), not a flat list —
         same rationale as shares.py: two distinct TrueNAS collections, and
         the UI's own Apps/VMs tab (brief §6) treats them as separate card
-        groups."""
-        return {'apps': list_apps(conn), 'vms': list_vms(conn)}
+        groups. Each fetched independently via safe_call — the vm.query
+        namespace is the one flagged as unstable across TrueNAS versions
+        (see module docstring), so a failure there must not also hide
+        `apps`, which responded fine (silent-failure-hunter finding, F1
+        review round 2)."""
+        apps, apps_error = safe_call('app.query', lambda: list_apps(conn), [])
+        vms, vms_error = safe_call('vm.query', lambda: list_vms(conn), [])
+        return {'apps': apps, 'apps_error': apps_error, 'vms': vms, 'vms_error': vms_error}
 
 
 apps_vms = AppsVmsSubsystem()

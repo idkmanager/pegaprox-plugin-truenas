@@ -14,9 +14,14 @@ The iSCSI write payload is explicitly unconfirmed per the brief (§4.2) —
 irrelevant here since F1 only reads; ``sharing.smb.query``/
 ``sharing.nfs.query``/``iscsi.*.query`` take no required params for a full
 listing.
+
+Each of the five collections is fetched independently via ``safe_call`` —
+a failing ``iscsi.*`` query (silent-failure-hunter finding, F1 review round
+2) must not also take down SMB/NFS results that DID come back fine. Every
+kind gets a ``<kind>_error`` key alongside it (``None`` on success).
 """
 
-from core.subsystem import Subsystem
+from core.subsystem import Subsystem, safe_call
 
 
 def list_smb(conn):
@@ -43,13 +48,23 @@ class SharesSubsystem(Subsystem):
     SUBSYSTEM_ID = 'shares'
 
     def list(self, conn):
-        """Returns a dict, not a flat list — see module docstring."""
+        """Returns a dict, not a flat list — see module docstring. Each of
+        the five collections degrades independently (safe_call) — one
+        failing kind never hides the others."""
+        smb, smb_error = safe_call('sharing.smb.query', lambda: list_smb(conn), [])
+        nfs, nfs_error = safe_call('sharing.nfs.query', lambda: list_nfs(conn), [])
+        targets, targets_error = safe_call(
+            'iscsi.target.query', lambda: list_iscsi_targets(conn), [])
+        extents, extents_error = safe_call(
+            'iscsi.extent.query', lambda: list_iscsi_extents(conn), [])
+        targetextents, targetextents_error = safe_call(
+            'iscsi.targetextent.query', lambda: list_iscsi_targetextents(conn), [])
         return {
-            'smb': list_smb(conn),
-            'nfs': list_nfs(conn),
-            'iscsi_targets': list_iscsi_targets(conn),
-            'iscsi_extents': list_iscsi_extents(conn),
-            'iscsi_targetextents': list_iscsi_targetextents(conn),
+            'smb': smb, 'smb_error': smb_error,
+            'nfs': nfs, 'nfs_error': nfs_error,
+            'iscsi_targets': targets, 'iscsi_targets_error': targets_error,
+            'iscsi_extents': extents, 'iscsi_extents_error': extents_error,
+            'iscsi_targetextents': targetextents, 'iscsi_targetextents_error': targetextents_error,
         }
 
 

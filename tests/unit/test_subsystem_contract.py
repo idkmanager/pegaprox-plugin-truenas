@@ -5,7 +5,8 @@ stubs and the read-only write() default need direct coverage too)."""
 
 import pytest
 
-from core.subsystem import HealthReport, ReadOnlySubsystem, Subsystem
+from core.errors import TrueNASConnectionError, TrueNASTimeoutError
+from core.subsystem import HealthReport, ReadOnlySubsystem, Subsystem, safe_call
 
 
 def test_health_report_to_dict():
@@ -58,3 +59,44 @@ def test_concrete_subsystems_inherit_read_only_write():
     for sub in (system, pools, datasets, snapshots, shares, replication, apps_vms):
         with pytest.raises(ReadOnlySubsystem):
             sub.write(conn=None, op='create', payload={})
+
+
+# ---------------------------------------------------------------------------
+# safe_call — the shared failure-isolation helper (silent-failure-hunter
+# finding, F1 review round 2): one sub-call failing must never sink an
+# entire multi-call subsystem response.
+# ---------------------------------------------------------------------------
+
+def test_safe_call_returns_value_and_no_error_on_success():
+    value, error = safe_call('some.method', lambda: {'ok': True}, default={})
+    assert value == {'ok': True}
+    assert error is None
+
+
+def test_safe_call_degrades_to_default_on_truenas_error():
+    def boom():
+        raise TrueNASConnectionError('appliance unreachable')
+
+    value, error = safe_call('disk.temperature_agg', boom, default={})
+    assert value == {}
+    assert 'appliance unreachable' in error
+
+
+def test_safe_call_degrades_on_timeout_too():
+    def boom():
+        raise TrueNASTimeoutError('timed out waiting for disk.temperature_agg')
+
+    value, error = safe_call('disk.temperature_agg', boom, default={})
+    assert value == {}
+    assert error is not None
+
+
+def test_safe_call_does_not_swallow_non_truenas_exceptions():
+    """A programming bug (e.g. AttributeError from a subsystem module) must
+    still surface loudly — safe_call only isolates TrueNAS-side failures,
+    not bugs in this codebase."""
+    def boom():
+        raise ValueError('this is a real bug, not a TrueNAS failure')
+
+    with pytest.raises(ValueError):
+        safe_call('some.method', boom, default={})

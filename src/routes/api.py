@@ -40,7 +40,8 @@ from pegaprox.utils.rbac import has_permission
 from pegaprox.utils.audit import log_audit
 
 from core.conn_manager import ConnectionManager
-from core.errors import TrueNASError
+from core.errors import TrueNASAuthError, TrueNASError
+from core.subsystem import safe_call
 from subsystems.apps_vms import apps_vms as apps_vms_subsystem
 from subsystems.datasets import datasets as datasets_subsystem
 from subsystems.pools import list_disks as pools_list_disks
@@ -250,8 +251,20 @@ def _get_authenticated_connection(inst):
     ``api_key_ro`` if the CURRENT socket hasn't authenticated yet.
     Read-only routes always use the RO key — never RW, even if configured
     (brief §3: minimum privilege in runtime, regardless of the instance's
-    ``readonly`` flag, which gates writers, not this)."""
+    ``readonly`` flag, which gates writers, not this).
+
+    Fails fast on ``conn.needs_auth`` — set when the appliance already
+    rejected this same key on a previous relogin attempt (bad/revoked key).
+    Without this check, every request/poll would retry the identical login
+    call against a key already known to be bad, hammering the appliance
+    with failed-auth attempts for no benefit (the error would still reach
+    the user either way — this just stops repeating a call whose answer is
+    already known)."""
     conn = conn_manager.get_connection(inst)
+    if conn.needs_auth:
+        raise TrueNASAuthError('auth.login_with_api_key', {
+            'message': 'API key was rejected on a previous attempt — '
+                       'check/rotate it in Settings before retrying'})
     if not conn.is_authenticated:
         conn.login(inst['api_key_ro'])
     return conn
@@ -273,6 +286,14 @@ def _subsystem_route(fetch_fn):
         conn = _get_authenticated_connection(inst)
         data = fetch_fn(conn)
     except TrueNASError as e:
+        # This is the EXPECTED failure path (appliance down, timeout,
+        # revoked key) — it used to leave zero trace server-side, so at
+        # 3am there was no way to tell from the logs that an instance had
+        # been 502ing for hours; only whoever happened to have the tab
+        # open in a browser ever saw it. Always log it, even though it's
+        # not a bug.
+        log.warning(f"[{PLUGIN_ID}] TrueNAS error for instance "
+                    f"'{instance_id}': {e}")
         return jsonify({'error': str(e), 'instance_id': instance_id}), 502
     except Exception as e:  # defensive: never let a subsystem bug 500 mute
         log.error(f"[{PLUGIN_ID}] unexpected error in subsystem route for "
@@ -282,11 +303,19 @@ def _subsystem_route(fetch_fn):
 
 
 def _system_fetch(conn):
-    active_alerts = system_alerts(conn)
+    """Every sub-call degrades independently (safe_call) — a failing
+    update.status (the LEAST critical call here, and per this module's own
+    docstring the one whose "no update available" shape was never captured
+    live) must not also hide alerts/health, which is what an all-or-nothing
+    fetch used to do (silent-failure-hunter finding, F1 review round 2)."""
+    info, info_error = safe_call('system.info', lambda: system_subsystem.read(conn), {})
+    active_alerts, alerts_error = safe_call('alert.list', lambda: system_alerts(conn), [])
+    update_status, update_status_error = safe_call(
+        'update.status', lambda: system_update_status(conn), {})
     return {
-        'info': system_subsystem.read(conn),
-        'alerts': active_alerts,
-        'update_status': system_update_status(conn),
+        'info': info, 'info_error': info_error,
+        'alerts': active_alerts, 'alerts_error': alerts_error,
+        'update_status': update_status, 'update_status_error': update_status_error,
         'health': system_subsystem.health(conn, active_alerts=active_alerts).to_dict(),
     }
 
@@ -296,12 +325,22 @@ def system_handler():
 
 
 def _pools_fetch(conn):
+    """``pool.query`` itself is NOT wrapped in safe_call — with no pools at
+    all there is nothing meaningful left to show, so that failure legitimately
+    surfaces as the route's 502. But ``disk.query`` and, especially,
+    ``disk.temperature_agg`` degrade independently: the real risk scenario
+    (brief §4.3/§9) is a disk failing SMART in a pool that's still ONLINE —
+    exactly where a hung/erroring temperature query must not also take down
+    pool status/health, which is what an all-or-nothing fetch used to do."""
     pool_list = pools_subsystem.list(conn)
-    disks = pools_list_disks(conn)
+    disks, disks_error = safe_call('disk.query', lambda: pools_list_disks(conn), [])
+    temperatures, temperatures_error = safe_call(
+        'disk.temperature_agg',
+        lambda: pools_temperatures(conn, disks=disks, pools=pool_list), {})
     return {
         'pools': pool_list,
-        'disks': disks,
-        'temperatures': pools_temperatures(conn, disks=disks, pools=pool_list),
+        'disks': disks, 'disks_error': disks_error,
+        'temperatures': temperatures, 'temperatures_error': temperatures_error,
         'health': pools_subsystem.health(conn, pools=pool_list).to_dict(),
     }
 

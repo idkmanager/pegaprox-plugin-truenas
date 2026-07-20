@@ -13,13 +13,15 @@ class FakeConn:
     an unexpected method — a subsystem calling something the test didn't
     anticipate should fail the test, not silently return None."""
 
-    def __init__(self, responses=None, is_authenticated=True):
+    def __init__(self, responses=None, is_authenticated=True, needs_auth=False):
         self.responses = dict(responses or {})
         self.calls = []
         # Route-level tests (routes/api.py's _get_authenticated_connection)
-        # also duck-type against `is_authenticated`/`login` — harmless
-        # extras for plain subsystem-level tests that never touch them.
+        # also duck-type against `is_authenticated`/`needs_auth`/`login` —
+        # harmless extras for plain subsystem-level tests that never touch
+        # them.
         self.is_authenticated = is_authenticated
+        self.needs_auth = needs_auth
         self.login_calls = []
 
     def call(self, method, params=None, timeout=None):

@@ -588,12 +588,35 @@ class TrueNASWSClient:
         try:
             result = self.call('auth.login_with_api_key', [api_key])
         except TrueNASRPCError as e:
+            # Set needs_auth here too, not only in _relogin_and_resubscribe's
+            # reconnect-triggered path — otherwise a bad key rejected on the
+            # very FIRST explicit login() (e.g. routes/api.py's
+            # _get_authenticated_connection, called on a persistent,
+            # per-instance-cached connection) would never flip this flag,
+            # and every subsequent request/poll would retry the identical
+            # doomed login call against the appliance forever.
+            self.needs_auth = True
             raise TrueNASAuthError('auth.login_with_api_key', e.error) from e
         if result is False:
+            self.needs_auth = True
             raise TrueNASAuthError('auth.login_with_api_key', {'message': 'rejected'})
         self._api_key = api_key
         self.needs_auth = False
-        self._authenticated = True
+        # Assign _authenticated atomically under _connect_lock, gated on the
+        # socket STILL being the one that just answered the login call. If
+        # the socket dropped in the window between call() returning and
+        # this line running, the reader thread already set
+        # _authenticated=False (and _connected=False) under this same lock
+        # — writing True here unconditionally would silently overwrite that
+        # with a lie: _connected=False but is_authenticated=True, so the
+        # NEXT request would skip login() entirely against a fresh,
+        # unauthenticated socket. Same "state that lies" bug class this
+        # file already fixed three times for _connected/_closed in F0.
+        with self._connect_lock:
+            if not self._connected:
+                raise TrueNASConnectionError(
+                    'socket dropped during login — session not established')
+            self._authenticated = True
         return result
 
     # -- events (hook for F1: core.get_jobs) -----------------------------------

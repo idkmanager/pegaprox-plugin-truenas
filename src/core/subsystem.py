@@ -17,7 +17,33 @@ returned as-is, never normalized/flattened — the plugin doesn't invent a
 lowest-common-denominator shape across subsystems.
 """
 
+import logging
 from dataclasses import dataclass, field
+
+from .errors import TrueNASError
+
+log = logging.getLogger('plugin.truenas.subsystem')
+
+
+def safe_call(label, fn, default):
+    """Call ``fn()`` and return ``(value, error_message_or_None)``.
+
+    On a ``TrueNASError``, degrades to ``default`` and logs a warning
+    instead of letting one sub-call's failure sink an entire multi-call
+    response. This matters most where a subsystem combines several
+    independent TrueNAS collections: e.g. a hung/erroring
+    ``disk.temperature_agg`` must not also hide pool status/health (the
+    real risk scenario is a disk failing SMART in a pool that's still
+    ``ONLINE`` — exactly when the operator most needs the rest of the
+    Pools tab); a failing ``iscsi.*`` query must not also hide a working
+    SMB/NFS listing; a failing ``vm.query`` must not also hide ``apps``
+    that responded fine.
+    """
+    try:
+        return fn(), None
+    except TrueNASError as e:
+        log.warning(f"[truenas] '{label}' failed, degrading gracefully: {e}")
+        return default, str(e)
 
 
 class ReadOnlySubsystem(Exception):

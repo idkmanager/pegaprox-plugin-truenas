@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.2.0] - 2026-07-20 (post-review hardening, round 3)
+
+Two independent reviews (code-reviewer + silent-failure-hunter) converged
+independently on the same concurrency bug plus a shared "all-or-nothing
+fetch" pattern across F1's multi-call subsystems.
+
+- **`_do_login`'s `_authenticated = True` assignment race**: it used to be
+  set unconditionally right after the login RPC returned. If the socket
+  dropped in the window between the response arriving and that assignment,
+  the reader thread had already set `_authenticated = False` under
+  `_connect_lock` — the unconditional write silently overwrote that with a
+  lie (`_connected: False`, `is_authenticated: True`), so the next request
+  would skip `login()` entirely against a fresh, session-less socket. Now
+  assigned atomically under `_connect_lock`, gated on the socket still
+  being the one that answered: raises `TrueNASConnectionError` instead of
+  lying if it dropped mid-login. Same "state that lies" bug class this
+  file already fixed three times for `_connected`/`_closed` in F0 — forced
+  the exact interleave in a regression test via a `client.call` wrapper.
+- **`core.subsystem.safe_call`**: new shared helper — call a sub-RPC,
+  degrade to a default and log a warning on `TrueNASError` instead of
+  letting one sub-call sink an entire multi-call response. Applied to:
+  - `pools` route fetch: `disk.query`/`disk.temperature_agg` now degrade
+    independently of `pool.query` — the real risk scenario (brief §4.3/§9)
+    is a disk failing SMART in a pool that's still `ONLINE`, exactly where
+    a hung/erroring temperature query used to also take down pool
+    status/health.
+  - `system` route fetch: `system.info`/`alert.list`/`update.status` each
+    degrade independently — `update.status` (the least critical, and per
+    its own docstring the one whose "no update" shape was never captured
+    live) used to also hide alerts/health if it failed.
+  - `shares.list()`: all 5 collections (SMB/NFS/3× iSCSI) degrade
+    independently — a failing `iscsi.*` query used to also hide a working
+    SMB/NFS listing.
+  - `apps_vms.list()`: `app.query`/`vm.query` degrade independently —
+    `vm.query` (the namespace already flagged as unstable across TrueNAS
+    versions) failing used to also hide `apps`, which responded fine.
+  - Every degraded fetch now carries a `<key>_error` field (`None` on
+    success) alongside the data, surfaced in the UI as an inline hint
+    rather than silently vanishing.
+- **`_subsystem_route`'s 502 path now logs a warning** — the expected
+  failure case (appliance down, timeout, revoked key) used to leave zero
+  server-side trace; only whoever had the browser tab open ever saw it.
+- **UI: both new F1 fetch chains (`Promise.all` for Overview,
+  `fetchSubsystem` for every other tab) now have `.catch()`** — a rejected
+  fetch (network down, PegaProx session expired returning HTML instead of
+  JSON) used to leave the tab stuck on "Cargando…" forever with an
+  unhandled rejection muted in the console. Deliberately does not mark the
+  tab as loaded on error, so the next click/instance-change retries.
+- **UI: Overview/Pools no longer cache** (every other F1 tab still does) —
+  they're the only ones showing live resilver/scrub progress, so caching
+  them could leave a stale % on screen for hours if the tab stays open.
+  Both now show an "actualizado HH:MM:SS" timestamp.
+- **`datasets.quota()`**: fixed a docstring that referenced a
+  `list_with_quotas` sweep that doesn't exist anywhere in the repo (nothing
+  calls `quota()` yet outside its own tests) — clarified it's a
+  standalone, not-yet-wired helper for a future per-dataset quota display,
+  and added a `log.warning` inside its except branch (dataset id + cause)
+  for when it IS wired in F1.5/F2.
+- **`needs_auth` is now actually consumed**: `_do_login` sets it on ANY
+  rejected login (not only the reconnect-triggered relogin path it was
+  previously limited to), and `_get_authenticated_connection` fails fast
+  on it instead of retrying the identical doomed `login()` call against a
+  key already proven bad — stops hammering the appliance with repeated
+  failed-auth attempts on every poll once a key is known revoked.
+- 164 tests (up from 149), verified via `pytest --collect-only -q`. 94%
+  combined coverage on `core/`+`routes/`+`subsystems/` (every individual
+  module ≥90%).
+
 ## [0.2.0] - 2026-07-20
 
 F1 — full read-only monitoring, on top of the WS client/conn_manager

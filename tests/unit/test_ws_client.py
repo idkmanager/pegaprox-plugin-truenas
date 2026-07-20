@@ -203,6 +203,53 @@ def test_login_failure_raises_auth_error_without_leaking_key():
     exc = result_box.get('exc')
     assert isinstance(exc, TrueNASAuthError)
     assert 'super-secret-api-key' not in str(exc)
+    assert client.needs_auth is True
+    _shutdown(client, ft)
+
+
+def test_first_login_rejection_sets_needs_auth_not_only_reconnect_relogin():
+    """needs_auth used to only be set from _relogin_and_resubscribe's
+    reconnect-triggered path — a bad key rejected on the very FIRST
+    explicit login() (the common case for a fresh, persistent,
+    per-instance-cached connection) never flipped it, so every subsequent
+    request/poll retried the identical doomed login call forever."""
+    ft = FakeTransport()
+    client = _client_with(ft)
+    assert client.needs_auth is False
+
+    def do_login():
+        try:
+            client.login('bad-key')
+        except TrueNASAuthError:
+            pass
+
+    t = threading.Thread(target=do_login)
+    t.start()
+    assert _wait_for(lambda: ft.sent)
+    req = json.loads(ft.sent[0])
+    ft.push({'jsonrpc': '2.0', 'id': req['id'], 'result': False})
+    t.join(timeout=2)
+
+    assert client.needs_auth is True
+    _shutdown(client, ft)
+
+
+def test_successful_login_clears_needs_auth():
+    ft = FakeTransport()
+    client = _client_with(ft)
+    client.needs_auth = True  # simulate a prior rejection
+
+    def do_login():
+        client.login('good-key-now')
+
+    t = threading.Thread(target=do_login)
+    t.start()
+    assert _wait_for(lambda: ft.sent)
+    req = json.loads(ft.sent[0])
+    ft.push({'jsonrpc': '2.0', 'id': req['id'], 'result': True})
+    t.join(timeout=2)
+
+    assert client.needs_auth is False
     _shutdown(client, ft)
 
 
@@ -1008,3 +1055,54 @@ def test_is_authenticated_true_again_after_successful_relogin_on_reconnect():
 
     assert _wait_for(lambda: client.is_authenticated, timeout=3)
     _shutdown(client, ft2)
+
+
+# ---------------------------------------------------------------------------
+# Regression: a socket drop landing between the login response arriving and
+# _authenticated being set must not leave is_authenticated=True over a dead
+# socket (code-reviewer + silent-failure-hunter, same finding independently).
+# ---------------------------------------------------------------------------
+
+def test_login_race_disconnect_between_response_and_authenticated_flag():
+    """Forces the exact interleave: the drop is injected right after
+    call('auth.login_with_api_key', ...) returns its result but BEFORE
+    _do_login's atomic assignment runs — by wrapping client.call itself,
+    the one seam _do_login actually goes through."""
+    ft = FakeTransport()
+    client = _client_with(ft, auto_reconnect=False)
+    client.connect()
+
+    original_call = client.call
+
+    def racy_call(method, params=None, timeout=None):
+        result = original_call(method, params=params, timeout=timeout)
+        if method == 'auth.login_with_api_key':
+            # Simulate the reader thread noticing a drop in the exact
+            # window between the response arriving and _do_login's own
+            # "still connected?" check + assignment.
+            client._handle_unexpected_disconnect('simulated drop during login')
+        return result
+
+    client.call = racy_call
+
+    result_box = {}
+
+    def do_login():
+        try:
+            client.login('ro-key')
+        except TrueNASConnectionError as e:
+            result_box['exc'] = e
+
+    t = threading.Thread(target=do_login)
+    t.start()
+    assert _wait_for(lambda: ft.sent)
+    req = json.loads(ft.sent[0])
+    ft.push({'jsonrpc': '2.0', 'id': req['id'], 'result': True})
+    t.join(timeout=2)
+
+    assert isinstance(result_box.get('exc'), TrueNASConnectionError)
+    # The core assertion: is_authenticated must NEVER report True over what
+    # is now a disconnected socket, regardless of the login response having
+    # said "yes" a moment earlier.
+    assert client.is_authenticated is False
+    assert not client.is_connected

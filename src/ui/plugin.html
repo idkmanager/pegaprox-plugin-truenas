@@ -441,6 +441,17 @@
     apps: 'apps_vms',
   };
 
+  // Overview/Pools show live resilver/scrub progress — the brief's whole
+  // point for the Overview bento — so they always refetch on entry rather
+  // than showing a stale % from whenever the tab was first opened. Every
+  // other F1 tab is fetched once per instance and cached (nothing in it
+  // changes second-to-second the way scan progress does).
+  var NEVER_CACHE_TABS = { overview: true, pools: true };
+
+  function networkErrorMessage(e) {
+    return 'Error de red: ' + (e && e.message ? e.message : e);
+  }
+
   function refreshTab(tab) {
     if (!tab || tab === 'settings') return;
     var bodyId = TAB_BODY_ID[tab];
@@ -452,7 +463,7 @@
       return;
     }
     var cacheKey = tab + '::' + state.selectedInstance;
-    if (state.loadedTabs[cacheKey]) return;  // already fetched for this instance
+    if (state.loadedTabs[cacheKey] && !NEVER_CACHE_TABS[tab]) return;
     body.className = 'loading';
     body.textContent = 'Cargando…';
 
@@ -460,6 +471,15 @@
       Promise.all([fetchSubsystem('system'), fetchSubsystem('pools')]).then(function (results) {
         renderOverview(body, results[0], results[1]);
         state.loadedTabs[cacheKey] = true;
+      }).catch(function (e) {
+        // Without this, a network failure (proxy down, PegaProx session
+        // expired and returning HTML instead of JSON, ...) left the tab
+        // stuck on "Cargando…" forever with nothing visible anywhere — an
+        // unhandled promise rejection muted in the console. Deliberately
+        // NOT marking loadedTabs here, so the next tab-click/instance
+        // change retries instead of staying stuck on the error forever.
+        body.className = 'empty';
+        body.textContent = networkErrorMessage(e);
       });
       return;
     }
@@ -472,7 +492,18 @@
       }
       RENDERERS[tab](body, res.data.data);
       state.loadedTabs[cacheKey] = true;
+    }).catch(function (e) {
+      body.className = 'empty';
+      body.textContent = networkErrorMessage(e);
     });
+  }
+
+  function updatedAtHtml() {
+    var now = new Date();
+    var hh = String(now.getHours()).padStart(2, '0');
+    var mm = String(now.getMinutes()).padStart(2, '0');
+    var ss = String(now.getSeconds()).padStart(2, '0');
+    return '<div class="subtab-hint">actualizado ' + hh + ':' + mm + ':' + ss + '</div>';
   }
 
   function renderOverview(body, sysRes, poolsRes) {
@@ -489,7 +520,8 @@
     var poolList = pools.pools || [];
     var scanning = poolList.filter(function (p) { return p.scan && p.scan.state === 'SCANNING'; });
 
-    var html = '<div class="bento">';
+    var html = updatedAtHtml();
+    html += '<div class="bento">';
     html += '<div class="card"><div class="stat-label">Sistema</div>' +
       '<div class="stat">' + badge(health.healthy ? 'ONLINE' : 'DEGRADED') + '</div>' +
       '<div>' + esc(health.summary || '') + '</div></div>';
@@ -514,7 +546,12 @@
       html += '</div>';
     }
 
-    if ((sys.alerts || []).length) {
+    if (sys.update_status_error) {
+      html += '<div class="subtab-hint">No se pudo leer update.status: ' + esc(sys.update_status_error) + '</div>';
+    }
+    if (sys.alerts_error) {
+      html += '<div class="empty">No se pudieron leer las alertas: ' + esc(sys.alerts_error) + '</div>';
+    } else if ((sys.alerts || []).length) {
       html += '<div class="card"><h2>Alertas</h2><table><thead><tr><th>Nivel</th><th>Mensaje</th></tr></thead><tbody>';
       sys.alerts.slice(0, 20).forEach(function (a) {
         html += '<tr><td>' + badge(a.level || '?') + '</td><td>' + esc(a.formatted || a.text || '') + '</td></tr>';
@@ -528,13 +565,20 @@
     body.className = '';
     var pools = data.pools || [], temps = data.temperatures || {};
     if (!pools.length) { body.className = 'empty'; body.innerHTML = 'Sin pools.'; return; }
-    var html = '<table><thead><tr><th>Pool</th><th>Estado</th><th>Scan</th></tr></thead><tbody>';
+    var html = updatedAtHtml();
+    html += '<table><thead><tr><th>Pool</th><th>Estado</th><th>Scan</th></tr></thead><tbody>';
     pools.forEach(function (p) {
       var scan = p.scan && p.scan.state === 'SCANNING'
         ? (p.scan.function + ' ' + (p.scan.percentage || 0).toFixed(1) + '%') : '—';
       html += '<tr><td>' + esc(p.name) + '</td><td>' + badge(p.status || '?') + '</td><td>' + esc(scan) + '</td></tr>';
     });
     html += '</tbody></table>';
+    if (data.disks_error) {
+      html += '<div class="subtab-hint">No se pudieron leer los discos: ' + esc(data.disks_error) + '</div>';
+    }
+    if (data.temperatures_error) {
+      html += '<div class="subtab-hint">No se pudieron leer temperaturas: ' + esc(data.temperatures_error) + '</div>';
+    }
     var diskNames = Object.keys(temps);
     if (diskNames.length) {
       html += '<h2 style="margin-top:16px;font-size:14px">Temperaturas</h2><table><thead><tr><th>Disco</th><th>Temp</th></tr></thead><tbody>';
