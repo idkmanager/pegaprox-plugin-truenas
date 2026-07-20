@@ -4,9 +4,22 @@
 
 Initial release — F0 (installable skeleton).
 
+### Post-release correction (same day, before any deploy)
+
+Live verification against the real `.64` instance (SSH + `midclt call`, read-only)
+found the WebSocket path assumption was wrong: `ws_client.url()` built
+`/api/current`, but reading `.64`'s own `/etc/nginx/nginx.conf` shows
+`/websocket` is the dedicated, active `proxy_pass` location — `/api/current`
+only appears to work because it falls through the generic `/api` prefix
+location to the same backend, not because it's a distinct JSON-RPC endpoint.
+Fixed before any real connection was attempted. Also confirmed live: `.64`
+already serves valid HTTPS (Let's Encrypt, not self-signed) on port `444`
+(`ui_httpsport`), not `81` (HTTP-only) — `config.example.json` updated to
+`port: 444, verify_tls: true`. No TrueNAS configuration change was needed.
+
 - Generic, reusable JSON-RPC 2.0 client over a persistent WebSocket
   (`src/core/ws_client.py`) for the TrueNAS SCALE middleware
-  (`wss://<host>:<port>/api/current`): request/response framing with
+  (`wss://<host>:<port>/websocket`): request/response framing with
   concurrent `id` handling, typed timeouts/errors (`TrueNASConnectionError`,
   `TrueNASTimeoutError`, `TrueNASRPCError`, `TrueNASAuthError`), lazy-connect
   (no network I/O at import/construction time), and automatic reconnection

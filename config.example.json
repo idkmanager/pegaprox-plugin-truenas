@@ -5,9 +5,9 @@
       "name": "TrueNAS Datos (.64)",
       "client_id": "idkmanager",
       "host": "<TRUENAS_HOST_OR_IP>",
-      "port": 81,
+      "port": 444,
       "use_tls": true,
-      "verify_tls": false,
+      "verify_tls": true,
       "api_key_ro": "<paste-from-svc-pegaprox-ro-vault — NUNCA commitear>",
       "api_key_rw": null,
       "readonly": true

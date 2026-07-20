@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """Generic, reusable JSON-RPC 2.0 client over a persistent WebSocket, for the
-TrueNAS SCALE middleware API (``wss://<host>:<port>/api/current``).
+TrueNAS SCALE middleware API (``wss://<host>:<port>/websocket``).
+
+Path verified 2026-07-20 against a real TrueNAS-25.10.1 instance by reading its
+own nginx config directly (SSH): ``/websocket`` is the dedicated, active
+location (``proxy_pass http://127.0.0.1:6000/websocket``). ``/api/current``
+also completes a WebSocket upgrade, but only because it falls through the
+generic ``/api`` prefix location to the same backend — it is not a distinct
+JSON-RPC endpoint and must not be relied on as "the versioned path".
 
 Design constraints (see PEGAPROX_PLUGIN_TRUENAS_BRIEF.md §2/§4/§9):
 
@@ -155,7 +162,7 @@ class TrueNASWSClient:
 
     def url(self):
         scheme = 'wss' if self.use_tls else 'ws'
-        return f'{scheme}://{self.host}:{self.port}/api/current'
+        return f'{scheme}://{self.host}:{self.port}/websocket'
 
     # -- connection lifecycle ------------------------------------------------
 
