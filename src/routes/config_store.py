@@ -184,6 +184,12 @@ def validate_instances(raw_instances, old_instances):
             'port': port,
             'use_tls': use_tls,
             'verify_tls': bool(raw.get('verify_tls', False)),
+            # Overrides TLS/SNI hostname verification independently of
+            # `host` — real TrueNAS instances are commonly reached by LAN
+            # IP but present a CA-issued cert bound to a DNS name (e.g. an
+            # ACME cert for remote access). Not a secret: no masking needed.
+            'tls_server_name': (str(raw.get('tls_server_name')).strip()
+                                 if raw.get('tls_server_name') else None),
             'api_key_ro': keys['api_key_ro'],
             'api_key_rw': keys['api_key_rw'],
             'readonly': bool(raw.get('readonly', True)),

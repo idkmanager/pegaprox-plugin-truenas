@@ -214,7 +214,7 @@ def test_connect_with_backoff_retries_then_succeeds():
     ft = FakeTransport()
     attempts = {'n': 0}
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         attempts['n'] += 1
         if attempts['n'] < 3:
             raise RuntimeError('connection refused (simulated)')
@@ -229,7 +229,7 @@ def test_connect_with_backoff_retries_then_succeeds():
 
 
 def test_connect_with_backoff_raises_after_exhausting_attempts():
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         raise RuntimeError('connection refused (simulated)')
 
     client = TrueNASWSClient('truenas.example', 443, transport_factory=factory,
@@ -244,7 +244,7 @@ def test_lazy_connect_never_touches_network_at_construction():
     # client — proves "no crash on import / construction without network".
     called = {'n': 0}
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         called['n'] += 1
         raise AssertionError('should not connect until call()/connect() is invoked')
 
@@ -259,7 +259,7 @@ def test_lazy_connect_never_touches_network_at_construction():
 def test_connect_raises_connection_error_directly_without_retry():
     calls = {'n': 0}
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         calls['n'] += 1
         raise OSError('refused')
 
@@ -324,7 +324,7 @@ def test_background_reconnect_recovers_after_unexpected_disconnect():
     ft2 = FakeTransport()
     transports = iter([ft1, ft2])
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         return next(transports)
 
     client = TrueNASWSClient('truenas.example', 443, transport_factory=factory,
@@ -346,7 +346,7 @@ def test_reconnect_relogins_with_stored_api_key():
     ft2 = FakeTransport()
     transports = iter([ft1, ft2])
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         return next(transports)
 
     client = TrueNASWSClient('truenas.example', 443, transport_factory=factory,
@@ -460,7 +460,7 @@ def test_reader_survives_arbitrary_exception_in_frame_handling(monkeypatch):
     ft2 = FakeTransport()
     transports = iter([ft1, ft2])
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         return next(transports)
 
     client = TrueNASWSClient('truenas.example', 443, transport_factory=factory,
@@ -521,7 +521,7 @@ def test_relogin_transient_failure_tears_down_and_retries_bounded():
     even exhausting its retry budget."""
     transports = []
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         ft = FakeTransport()
         transports.append(ft)
         return ft
@@ -565,7 +565,7 @@ def test_relogin_auth_rejection_sets_needs_auth_and_stops_retrying():
     achieves nothing but audit-log spam against the appliance."""
     transports = []
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         ft = FakeTransport()
         transports.append(ft)
         return ft
@@ -616,7 +616,7 @@ def test_close_during_backoff_sleep_cancels_pending_reconnect():
     ft1 = FakeTransport()
     later_transports = []
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         # First call (the initial explicit connect()) hands out ft1.
         # Every later call (a reconnect attempt) would hand out a fresh
         # transport — but none should ever be requested after close().
@@ -632,7 +632,7 @@ def test_close_during_backoff_sleep_cancels_pending_reconnect():
     # Force connect() to fail for every RECONNECT attempt (simulating the
     # appliance being briefly unreachable), so _connect_with_backoff has to
     # go through its backoff-sleep path where we'll race the close().
-    def failing_factory(url, verify_tls, timeout):
+    def failing_factory(url, verify_tls, timeout, tls_server_name=None):
         raise OSError('simulated: still unreachable')
 
     client._transport_factory = failing_factory
@@ -704,7 +704,7 @@ def test_toctou_close_racing_the_lock_acquisition_does_not_resurrect_stale_key()
     ft1 = FakeTransport()
     later_transports = []
 
-    def factory(url, verify_tls, timeout):
+    def factory(url, verify_tls, timeout, tls_server_name=None):
         ft = FakeTransport()
         later_transports.append(ft)
         return ft
@@ -835,3 +835,71 @@ def test_default_transport_factory_disables_recv_timeout(monkeypatch):
 
     assert calls['settimeout'] is None
     assert isinstance(ws, _FakeRealWS)
+
+
+# ---------------------------------------------------------------------------
+# Regression: real TrueNAS instances are commonly reached by LAN IP but
+# present a CA-issued cert bound to a DNS name (confirmed live 2026-07-20
+# against .64: cert CN=nube.idkmanager.com, dialed via IP 192.0.2.64) —
+# verify_tls=True must not fail with "IP address mismatch" when the caller
+# supplies the correct SNI/verification name separately from the dial host.
+# ---------------------------------------------------------------------------
+
+def test_default_transport_factory_passes_server_hostname_for_sni(monkeypatch):
+    captured = {}
+
+    class _FakeRealWS:
+        def settimeout(self, value):
+            pass
+
+    def fake_create_connection(url, timeout=None, sslopt=None):
+        captured['sslopt'] = sslopt
+        return _FakeRealWS()
+
+    fake_websocket_module = types.SimpleNamespace(create_connection=fake_create_connection)
+    monkeypatch.setitem(sys.modules, 'websocket', fake_websocket_module)
+
+    from core.ws_client import _default_transport_factory
+    _default_transport_factory(
+        'wss://192.0.2.64:444/api/current', True, 10.0, tls_server_name='nube.idkmanager.com')
+
+    assert captured['sslopt'] == {'server_hostname': 'nube.idkmanager.com'}
+
+
+def test_default_transport_factory_no_server_hostname_verifies_against_url_host(monkeypatch):
+    captured = {}
+
+    class _FakeRealWS:
+        def settimeout(self, value):
+            pass
+
+    def fake_create_connection(url, timeout=None, sslopt=None):
+        captured['sslopt'] = sslopt
+        return _FakeRealWS()
+
+    fake_websocket_module = types.SimpleNamespace(create_connection=fake_create_connection)
+    monkeypatch.setitem(sys.modules, 'websocket', fake_websocket_module)
+
+    from core.ws_client import _default_transport_factory
+    _default_transport_factory('wss://truenas.example:443/websocket', True, 10.0)
+
+    # No override supplied -> let websocket-client verify against url's own
+    # host, same as before this feature existed.
+    assert captured['sslopt'] is None
+
+
+def test_client_threads_tls_server_name_through_to_transport_factory():
+    captured = {}
+    ft = FakeTransport()
+
+    def fake_factory(url, verify_tls, timeout, tls_server_name=None):
+        captured['tls_server_name'] = tls_server_name
+        return ft
+
+    client = TrueNASWSClient(
+        host='192.0.2.64', port=444, use_tls=True, verify_tls=True,
+        tls_server_name='nube.idkmanager.com', transport_factory=fake_factory)
+    client.connect()
+
+    assert captured['tls_server_name'] == 'nube.idkmanager.com'
+    _shutdown(client, ft)

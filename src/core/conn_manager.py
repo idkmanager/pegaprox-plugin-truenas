@@ -36,6 +36,7 @@ class ConnectionManager:
                     port=instance_cfg.get('port', 443),
                     use_tls=instance_cfg.get('use_tls', True),
                     verify_tls=instance_cfg.get('verify_tls', False),
+                    tls_server_name=instance_cfg.get('tls_server_name'),
                 )
                 self._clients[instance_id] = client
             return client
@@ -69,6 +70,7 @@ class ConnectionManager:
             port=instance_cfg.get('port', 443),
             use_tls=instance_cfg.get('use_tls', True),
             verify_tls=instance_cfg.get('verify_tls', False),
+            tls_server_name=instance_cfg.get('tls_server_name'),
         )
         try:
             client.connect()

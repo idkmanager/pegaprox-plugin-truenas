@@ -8,9 +8,10 @@ from core.errors import TrueNASAuthError, TrueNASConnectionError
 
 class _FakeClient:
     def __init__(self, host, port, use_tls=True, verify_tls=False,
-                 connect_error=None, login_error=None):
+                 tls_server_name=None, connect_error=None, login_error=None):
         self.host = host
         self.port = port
+        self.tls_server_name = tls_server_name
         self.is_connected = False
         self.last_error = None
         self._connect_error = connect_error
@@ -39,6 +40,19 @@ class _FakeClient:
 def _instance_cfg(id_='truenas-test'):
     return {'id': id_, 'host': '192.0.2.64', 'port': 8443,
             'use_tls': True, 'verify_tls': False}
+
+
+def test_get_connection_threads_tls_server_name_from_instance_cfg():
+    # Real TrueNAS instances are commonly reached by LAN IP but present a
+    # cert bound to a DNS name (confirmed live 2026-07-20 against .64) —
+    # conn_manager must pass this through, not just use_tls/verify_tls.
+    cfg = _instance_cfg()
+    cfg['tls_server_name'] = 'nube.idkmanager.com'
+
+    mgr = ConnectionManager(client_factory=lambda **kw: _FakeClient(**kw))
+    client = mgr.get_connection(cfg)
+
+    assert client.tls_server_name == 'nube.idkmanager.com'
 
 
 def test_get_connection_creates_and_reuses_same_client():

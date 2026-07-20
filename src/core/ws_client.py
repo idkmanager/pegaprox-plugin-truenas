@@ -1,13 +1,30 @@
 # -*- coding: utf-8 -*-
 """Generic, reusable JSON-RPC 2.0 client over a persistent WebSocket, for the
-TrueNAS SCALE middleware API (``wss://<host>:<port>/websocket``).
+TrueNAS SCALE middleware API (``wss://<host>:<port>/api/current``).
 
-Path verified 2026-07-20 against a real TrueNAS-25.10.1 instance by reading its
-own nginx config directly (SSH): ``/websocket`` is the dedicated, active
-location (``proxy_pass http://127.0.0.1:6000/websocket``). ``/api/current``
-also completes a WebSocket upgrade, but only because it falls through the
-generic ``/api`` prefix location to the same backend — it is not a distinct
-JSON-RPC endpoint and must not be relied on as "the versioned path".
+Path CONFIRMED 2026-07-20 against a real TrueNAS-25.10.1 instance, twice, in
+opposite directions — the first check was wrong; the second reads the
+authoritative source and corrects it:
+
+1. First pass (WRONG): reading ``/etc/nginx/nginx.conf`` found ``/websocket``
+   as a dedicated, active ``location`` block and concluded it must be the
+   real JSON-RPC endpoint. This was a mistake — nginx routing tells you
+   which paths reach the backend, not which *application-level protocol*
+   each path speaks once it gets there.
+2. Second pass (CORRECT — this is the live protocol error that caught it):
+   sending a JSON-RPC envelope to ``/websocket`` against the real instance
+   produced a server-side crash in ``middlewared``'s log:
+   ``middlewared.apps.websocket_app.on_message(): KeyError: 'msg'`` —
+   because ``/websocket`` speaks the OLD legacy DDP-style protocol (its
+   first expected client message is ``{"msg": "connect", ...}``, not a raw
+   JSON-RPC call). Reading ``middlewared/main.py`` directly confirms the
+   real dispatch: ``app.router.add_route('GET', '/websocket',
+   self.ws_handler)`` is the legacy DDP handler, while
+   ``app.router.add_route('GET', f'/api/{version}', RpcWebSocketHandler(...))``
+   — registered once per entry in ``self._load_apis()``, which includes the
+   key ``"current"`` — is the actual JSON-RPC 2.0 handler
+   (``middlewared/api/base/server/ws_handler/rpc.py``). ``/api/current`` was
+   the right path from the start.
 
 Design constraints (see PEGAPROX_PLUGIN_TRUENAS_BRIEF.md §2/§4/§9):
 
@@ -59,7 +76,7 @@ DEFAULT_BACKOFF_BASE_S = 1.0
 DEFAULT_BACKOFF_CAP_S = 30.0
 
 
-def _default_transport_factory(url, verify_tls, timeout):
+def _default_transport_factory(url, verify_tls, timeout, tls_server_name=None):
     """Open a real WebSocket connection using ``websocket-client``.
 
     Imported lazily so importing this module never requires the dependency
@@ -74,10 +91,23 @@ def _default_transport_factory(url, verify_tls, timeout):
     resubscribe churn, and audit-log spam against the appliance, on a
     connection that was never actually unhealthy. Per-request timeouts are
     already enforced independently by ``call()``'s ``Event.wait(timeout)``.
+
+    ``tls_server_name``: real-world TrueNAS instances are commonly reached by
+    LAN IP but present a CA-issued cert bound to a DNS name (e.g. an ACME
+    cert obtained via DNS-01 for remote-access purposes), so IP-based
+    hostname verification fails with "IP address mismatch" even though the
+    cert is perfectly valid. Setting this overrides the SNI/verification
+    name independently of ``url``'s literal host — dial the IP, verify the
+    name. Confirmed live against a real instance 2026-07-20 (cert
+    `CN=nube.idkmanager.com`, connection host a LAN IP with no DNS relation
+    to that name).
     """
     import websocket  # intentional lazy import — see module docstring
 
-    sslopt = None if verify_tls else {'cert_reqs': ssl.CERT_NONE}
+    if verify_tls:
+        sslopt = {'server_hostname': tls_server_name} if tls_server_name else None
+    else:
+        sslopt = {'cert_reqs': ssl.CERT_NONE}
     ws = websocket.create_connection(url, timeout=timeout, sslopt=sslopt)
     ws.settimeout(None)
     return ws
@@ -91,6 +121,7 @@ class TrueNASWSClient:
     """
 
     def __init__(self, host, port, use_tls=True, verify_tls=False,
+                 tls_server_name=None,
                  timeout=DEFAULT_TIMEOUT, transport_factory=None,
                  auto_reconnect=True,
                  max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
@@ -101,6 +132,10 @@ class TrueNASWSClient:
         self.port = port
         self.use_tls = use_tls
         self.verify_tls = verify_tls
+        # Overrides TLS/SNI hostname verification independently of `host`
+        # (which is what's actually dialed) — see _default_transport_factory
+        # docstring: real certs bound to a DNS name, reached by LAN IP.
+        self.tls_server_name = tls_server_name
         self.timeout = timeout
         self.auto_reconnect = auto_reconnect
         self.max_reconnect_attempts = max_reconnect_attempts
@@ -162,7 +197,7 @@ class TrueNASWSClient:
 
     def url(self):
         scheme = 'wss' if self.use_tls else 'ws'
-        return f'{scheme}://{self.host}:{self.port}/websocket'
+        return f'{scheme}://{self.host}:{self.port}/api/current'
 
     # -- connection lifecycle ------------------------------------------------
 
@@ -197,7 +232,8 @@ class TrueNASWSClient:
                 raise TrueNASConnectionError(
                     'client was closed; refusing to reconnect without an explicit connect()')
             try:
-                self._ws = self._transport_factory(self.url(), self.verify_tls, self.timeout)
+                self._ws = self._transport_factory(
+                    self.url(), self.verify_tls, self.timeout, self.tls_server_name)
             except Exception as e:
                 self._last_error = str(e)
                 raise TrueNASConnectionError(f'could not connect to {self.host}:{self.port}: {e}') from e

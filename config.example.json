@@ -8,6 +8,7 @@
       "port": 444,
       "use_tls": true,
       "verify_tls": true,
+      "tls_server_name": null,
       "api_key_ro": "<paste-from-svc-pegaprox-ro-vault — NUNCA commitear>",
       "api_key_rw": null,
       "readonly": true
