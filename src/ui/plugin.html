@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TrueNAS — PegaProx</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --border: #2a3038; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    --radius: 8px;
+  }
+  [data-theme="cloud"] {
+    --bg: #f4f6f8; --panel: #ffffff; --border: #dde3ea; --text: #1b2430;
+    --muted: #5c6b7a; --accent: #2563eb; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  #instance-select {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 6px 10px; min-width: 240px;
+  }
+  .chip {
+    display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+    background: var(--border); color: var(--muted);
+  }
+  .chip.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .chip.err { background: rgba(248,81,73,.15); color: var(--err); }
+  nav {
+    display: flex; gap: 4px; padding: 0 20px; border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+  nav button {
+    background: none; border: none; color: var(--muted); padding: 10px 14px;
+    cursor: pointer; font-size: 13px; border-bottom: 2px solid transparent;
+  }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  nav button:disabled { opacity: .45; cursor: not-allowed; }
+  main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .tab { display: none; }
+  .tab.active { display: block; }
+  .empty {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 20px; text-align: center; color: var(--muted);
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; }
+  .client-group { margin-bottom: 20px; }
+  .client-group > h3 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0 0 8px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; }
+  .row-actions { display: flex; gap: 8px; }
+  button.btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 6px;
+    padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  button.btn.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; }
+  input[type="text"], input[type="number"] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px; width: 100%;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .field { margin-bottom: 10px; }
+  .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field-row.tri { grid-template-columns: 2fr 1fr 1fr; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  #test-result { margin-top: 10px; font-size: 13px; }
+  #test-result.ok { color: var(--ok); }
+  #test-result.err { color: var(--err); }
+  .checkbox-field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .checkbox-field input { width: auto; }
+  a.link { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TrueNAS</h1>
+  <select id="instance-select"><option value="">no instances configured</option></select>
+  <span id="instance-chip" class="chip"></span>
+</header>
+
+<nav id="tabs">
+  <button data-tab="overview">Overview</button>
+  <button data-tab="pools">Pools &amp; Discos</button>
+  <button data-tab="datasets">Datasets</button>
+  <button data-tab="snapshots">Snapshots</button>
+  <button data-tab="shares">Shares</button>
+  <button data-tab="replication">Replicación</button>
+  <button data-tab="apps">Apps/VMs</button>
+  <button data-tab="settings" class="active">Settings</button>
+</nav>
+
+<main>
+  <section class="tab" id="tab-overview"><div class="empty">Overview llega en F1 (system.info, alert.list, pool.query en vivo).</div></section>
+  <section class="tab" id="tab-pools"><div class="empty">Pools &amp; Discos llega en F1.</div></section>
+  <section class="tab" id="tab-datasets"><div class="empty">Datasets llega en F1 (lectura) / F2 (crear-editar).</div></section>
+  <section class="tab" id="tab-snapshots"><div class="empty">Snapshots llega en F1 (lectura) / F2 (crear-borrar).</div></section>
+  <section class="tab" id="tab-shares"><div class="empty">Shares (SMB/NFS/iSCSI) llega en F3.</div></section>
+  <section class="tab" id="tab-replication"><div class="empty">Replicación llega en F4.</div></section>
+  <section class="tab" id="tab-apps"><div class="empty">Apps/VMs llega en F3.</div></section>
+
+  <section class="tab active" id="tab-settings">
+    <div class="toolbar">
+      <h2 style="margin:0;font-size:15px;">Instancias configuradas</h2>
+      <button class="btn" id="btn-new-instance">+ Nueva instancia</button>
+    </div>
+    <div id="instances-by-client"><div class="empty">Cargando…</div></div>
+
+    <div class="card" id="instance-form-card" hidden>
+      <h2 id="instance-form-title">Nueva instancia</h2>
+      <div class="field-row">
+        <div class="field"><label>ID</label><input type="text" id="f-id"></div>
+        <div class="field"><label>Nombre</label><input type="text" id="f-name"></div>
+      </div>
+      <div class="field">
+        <label>Cliente (client_id)</label>
+        <input type="text" id="f-client" list="known-clients" placeholder="idkmanager, sacei, ingesa, geospace…">
+        <datalist id="known-clients"></datalist>
+      </div>
+      <div class="field-row tri">
+        <div class="field"><label>Host</label><input type="text" id="f-host"></div>
+        <div class="field"><label>Puerto</label><input type="number" id="f-port" value="443"></div>
+        <div class="field"><label>API key (RO)</label><input type="text" id="f-key" placeholder="***"></div>
+      </div>
+      <div class="checkbox-field"><input type="checkbox" id="f-tls" checked><label for="f-tls" style="margin:0">use_tls (obligatorio con API key)</label></div>
+      <div class="checkbox-field"><input type="checkbox" id="f-verify"><label for="f-verify" style="margin:0">verify_tls</label></div>
+      <div class="checkbox-field"><input type="checkbox" id="f-readonly" checked><label for="f-readonly" style="margin:0">readonly (kill-switch de escritura)</label></div>
+      <div class="row-actions">
+        <button class="btn secondary" id="btn-test">Probar conexión</button>
+        <button class="btn" id="btn-save-instance">Guardar</button>
+        <button class="btn secondary" id="btn-cancel-instance">Cancelar</button>
+      </div>
+      <div id="test-result"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var qs = new URLSearchParams(location.search);
+  var theme = qs.get('theme');
+  if (theme) document.documentElement.setAttribute('data-theme', theme);
+
+  var API_BASE = '/api/plugins/truenas/api/';
+  var state = { config: null, editingId: null };
+
+  function api(path, opts) {
+    opts = opts || {};
+    return fetch(API_BASE + path, {
+      method: opts.method || 'GET',
+      headers: { 'Content-Type': 'application/json' },
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      credentials: 'same-origin',
+    }).then(function (r) {
+      return r.json().then(function (data) { return { status: r.status, data: data }; });
+    });
+  }
+
+  // -- tabs -------------------------------------------------------------
+  var tabButtons = Array.prototype.slice.call(document.querySelectorAll('#tabs button'));
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      if (btn.disabled) return;
+      tabButtons.forEach(function (b) { b.classList.remove('active'); });
+      document.querySelectorAll('main .tab').forEach(function (t) { t.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // -- instance selector (grouped by client, per brief §3.1) -----------
+  function renderSelector(groups) {
+    var select = document.getElementById('instance-select');
+    select.innerHTML = '';
+    var total = 0;
+    if (!groups || !groups.length) {
+      var opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'no instances configured';
+      select.appendChild(opt);
+      return;
+    }
+    groups.forEach(function (group) {
+      var og = document.createElement('optgroup');
+      og.label = group.client_id;
+      group.instances.forEach(function (inst) {
+        total++;
+        var opt = document.createElement('option');
+        opt.value = inst.id;
+        opt.textContent = inst.name || inst.id;
+        og.appendChild(opt);
+      });
+      select.appendChild(og);
+    });
+    if (!total) {
+      var empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'no instances configured';
+      select.appendChild(empty);
+    }
+  }
+
+  function renderClientList(groups) {
+    var root = document.getElementById('instances-by-client');
+    root.innerHTML = '';
+    if (!groups || !groups.length) {
+      root.innerHTML = '<div class="empty">no instances configured — usá "Nueva instancia" para dar de alta la primera (p.ej. TrueNAS .64 de IDKmanager).</div>';
+      return;
+    }
+    groups.forEach(function (group) {
+      var wrap = document.createElement('div');
+      wrap.className = 'client-group';
+      var h3 = document.createElement('h3');
+      h3.textContent = group.client_id;
+      wrap.appendChild(h3);
+      var table = document.createElement('table');
+      table.innerHTML = '<thead><tr><th>Nombre</th><th>Host</th><th>Puerto</th>' +
+        '<th>TLS</th><th>Readonly</th><th></th></tr></thead>';
+      var tbody = document.createElement('tbody');
+      group.instances.forEach(function (inst) {
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+          '<td>' + esc(inst.name) + '</td>' +
+          '<td>' + esc(inst.host) + '</td>' +
+          '<td>' + esc(inst.port) + '</td>' +
+          '<td>' + (inst.use_tls ? 'sí' : 'no') + '</td>' +
+          '<td>' + (inst.readonly ? 'sí' : 'no') + '</td>' +
+          '<td class="row-actions"></td>';
+        var editBtn = document.createElement('button');
+        editBtn.className = 'btn secondary';
+        editBtn.textContent = 'Editar';
+        editBtn.addEventListener('click', function () { openForm(inst); });
+        tr.querySelector('td:last-child').appendChild(editBtn);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      root.appendChild(wrap);
+    });
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // -- instance form (create/edit + test connection) --------------------
+  function openForm(inst) {
+    state.editingId = inst ? inst.id : null;
+    document.getElementById('instance-form-card').hidden = false;
+    document.getElementById('instance-form-title').textContent = inst ? 'Editar instancia' : 'Nueva instancia';
+    document.getElementById('f-id').value = inst ? inst.id : '';
+    document.getElementById('f-id').disabled = !!inst;
+    document.getElementById('f-name').value = inst ? inst.name : '';
+    document.getElementById('f-client').value = inst ? inst.client_id : '';
+    document.getElementById('f-host').value = inst ? inst.host : '';
+    document.getElementById('f-port').value = inst ? inst.port : 443;
+    document.getElementById('f-key').value = inst && inst.api_key_ro ? inst.api_key_ro : '';
+    document.getElementById('f-tls').checked = inst ? !!inst.use_tls : true;
+    document.getElementById('f-verify').checked = inst ? !!inst.verify_tls : false;
+    document.getElementById('f-readonly').checked = inst ? !!inst.readonly : true;
+    document.getElementById('test-result').textContent = '';
+    document.getElementById('test-result').className = '';
+  }
+
+  function closeForm() {
+    document.getElementById('instance-form-card').hidden = true;
+    document.getElementById('f-id').disabled = false;
+    state.editingId = null;
+  }
+
+  function formToInstance() {
+    return {
+      id: document.getElementById('f-id').value.trim(),
+      name: document.getElementById('f-name').value.trim(),
+      client_id: document.getElementById('f-client').value.trim() || 'unassigned',
+      host: document.getElementById('f-host').value.trim(),
+      port: parseInt(document.getElementById('f-port').value, 10) || 0,
+      use_tls: document.getElementById('f-tls').checked,
+      verify_tls: document.getElementById('f-verify').checked,
+      api_key_ro: document.getElementById('f-key').value,
+      api_key_rw: null,
+      readonly: document.getElementById('f-readonly').checked,
+    };
+  }
+
+  function refreshKnownClients() {
+    var list = document.getElementById('known-clients');
+    list.innerHTML = '';
+    (state.config && state.config.instances_by_client || []).forEach(function (g) {
+      var opt = document.createElement('option');
+      opt.value = g.client_id;
+      list.appendChild(opt);
+    });
+  }
+
+  function loadConfig() {
+    return api('config').then(function (res) {
+      if (res.status !== 200) {
+        document.getElementById('instances-by-client').innerHTML =
+          '<div class="empty">' + esc((res.data && res.data.error) || 'error loading config') + '</div>';
+        return;
+      }
+      state.config = res.data;
+      renderSelector(res.data.instances_by_client);
+      renderClientList(res.data.instances_by_client);
+      refreshKnownClients();
+    });
+  }
+
+  function saveInstances(nextInstances) {
+    return api('config/save', {
+      method: 'POST',
+      body: { instances: nextInstances, poll: state.config ? state.config.poll : undefined },
+    });
+  }
+
+  document.getElementById('btn-new-instance').addEventListener('click', function () { openForm(null); });
+  document.getElementById('btn-cancel-instance').addEventListener('click', closeForm);
+
+  document.getElementById('btn-test').addEventListener('click', function () {
+    var draft = formToInstance();
+    var out = document.getElementById('test-result');
+    out.className = '';
+    out.textContent = 'Probando…';
+    api('instances/test', { method: 'POST', body: draft }).then(function (res) {
+      var ok = res.data && res.data.ok;
+      out.className = ok ? 'ok' : 'err';
+      out.textContent = ok ? 'Conexión OK (auth.login_with_api_key exitoso).'
+                            : 'Error: ' + ((res.data && res.data.error) || 'desconocido');
+    }).catch(function (e) {
+      out.className = 'err';
+      out.textContent = 'Error de red: ' + e;
+    });
+  });
+
+  document.getElementById('btn-save-instance').addEventListener('click', function () {
+    var draft = formToInstance();
+    if (!draft.id || !draft.host) {
+      var out = document.getElementById('test-result');
+      out.className = 'err';
+      out.textContent = 'id y host son obligatorios.';
+      return;
+    }
+    var existing = (state.config && state.config.instances) || [];
+    var next = existing.filter(function (i) { return i.id !== draft.id; }).concat([draft]);
+    saveInstances(next).then(function (res) {
+      if (res.status === 200) {
+        closeForm();
+        loadConfig();
+      } else {
+        var out = document.getElementById('test-result');
+        out.className = 'err';
+        out.textContent = 'Error: ' + ((res.data && res.data.error) || 'no se pudo guardar');
+      }
+    });
+  });
+
+  document.getElementById('instance-select').addEventListener('change', function (e) {
+    var chip = document.getElementById('instance-chip');
+    chip.textContent = e.target.value ? 'seleccionada' : '';
+    chip.className = 'chip';
+  });
+
+  // Non-Settings tabs are intentionally inert in F0 (no subsystem routes
+  // exist yet) — keep them enabled (per the plan) but they only show the
+  // "coming in F1/F2/F3" placeholder already in the markup.
+
+  loadConfig();
+})();
+</script>
+</body>
+</html>

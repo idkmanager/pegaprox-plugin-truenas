@@ -1,0 +1,9 @@
+# Runtime dependencies for the TrueNAS plugin.
+#
+# websocket-client is the JSON-RPC 2.0 transport (see src/core/ws_client.py).
+# CT119 (the PegaProx host) has NO external DNS/internet access — this
+# dependency must be made available offline before F0-deploy (either
+# vendored into the plugin's cache dir, or pre-installed into the host's
+# Python environment from a mirror reachable from the LAN). That step is
+# explicitly OUT of scope for F0 (see README.md "Pendiente de F0-deploy").
+websocket-client>=1.8,<2
