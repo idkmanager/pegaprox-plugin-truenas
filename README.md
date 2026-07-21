@@ -1,21 +1,73 @@
 # TrueNAS — PegaProx Plugin
 
-Monitors and controls one or more TrueNAS SCALE instances from the PegaProx
-panel (TrueCommand-style), over the JSON-RPC 2.0 WebSocket API — REST v2.0
-is deprecated in 25.10 and removed in TrueNAS 26, so this plugin never uses
-it. See `PEGAPROX_PLUGIN_TRUENAS_BRIEF.md` (in the workspace, not this repo)
-for the full architecture, phase plan and known gotchas.
+Monitors and **administers** one or more TrueNAS SCALE instances from the
+PegaProx panel (TrueCommand-style), over the JSON-RPC 2.0 WebSocket API —
+REST v2.0 is deprecated in 25.10 and removed in TrueNAS 26, so this plugin
+never uses it.
 
-**This is F2 (v0.3.0): first real writes** — datasets/zvols and snapshots
-create/update/delete, on top of F1's read-only monitoring (verified live
-against the real `.64` instance) and F0's transport layer/config/UI shell.
-Every other subsystem (pools, shares, replication, apps/VMs, system)
-remains read-only until its own write phase (F3+ per the brief's phase
-table). Built entirely with fakes/mocks — no real key, no real call
-against any instance in this repo's tests or code; the operator connects
-`svc-pegaprox-rw` and runs the first live write separately after review.
+**v0.9.0** — enough surface to run TrueNAS day-to-day without opening its
+own UI: pools/disks health, datasets, snapshots, SMB/NFS shares (iSCSI is
+read-only), replication, apps/VMs, services, data-protection posture
+(cloudsync/rsync/certificates) and CPU/memory/network telemetry. Every
+write (datasets/zvols, snapshots, services, VMs/apps, SMB/NFS shares) goes
+through the same dry-run → typed-confirmation → execute → verify → audit
+path — see `WRITE_OPS` in `src/routes/api.py`. 352 tests, all built and
+verified against fakes/mocks first; every real RPC schema was confirmed
+live against a real instance (`core.get_methods`) before being coded, and
+every write phase's first real call was reviewed by the operator before
+shipping. See `CHANGELOG.md` for the full phase-by-phase history (F0
+transport/config → F1 read-only monitoring → F2 datasets/snapshots writes
+→ F3 fleet overview → F4a-c services/shares → F5 VMs/apps lifecycle → F6
+data-protection posture → telemetry charts).
 
-## What's in F2 (on top of F1)
+## Feature phases (F0 → F6)
+
+Full detail for every entry below is in `CHANGELOG.md`; this is the map.
+
+### F3 — Fleet overview
+
+`src/subsystems/fleet.py` fans out across every configured instance
+concurrently (`ThreadPoolExecutor`) and aggregates health + recent
+non-auth audit events into one dashboard — the plugin's entry tab.
+
+### F4a/F4b — Services (read-only, then start/stop/restart)
+
+`src/subsystems/services.py`. F4b's control ops needed a `SERVICE_WRITE`
+privilege grant on the RW service account before the RPCs became visible —
+same pattern repeated for F5's `VM_WRITE`/`APPS_WRITE`.
+
+### F4c — SMB/NFS share create/update/delete
+
+`src/subsystems/shares.py`. Typed-confirmation delete guard adapted for
+opaque integer share ids (the caller supplies `expected_name`/
+`expected_path` instead of the id being self-referential like a dataset
+path). iSCSI stays read-only — see "Known gaps" below.
+
+### F5 — VM/App lifecycle control
+
+`src/subsystems/apps_vms.py`: start/stop/restart for VMs, start/stop/
+**redeploy** for Apps (`app.restart` doesn't exist on this TrueNAS
+version — redeploy pulls fresh images, a heavier op, never mislabeled as
+a plain restart).
+
+### F6 — Data-protection posture
+
+`src/subsystems/data_protection.py` — Cloudsync/Rsync tasks + certificate
+expiry, read-only. **Security fix baked in**: this is the one subsystem
+that does NOT do this codebase's usual attrs-passthrough, because the raw
+`cloudsync.query`/`certificate.query` records embed cleartext secrets
+(a cloud provider's API key, a certificate's private key PEM). Every
+function returns an explicit field allow-list instead; tests assert the
+secret strings are ABSENT from the output, not just that safe fields are
+present.
+
+### Telemetry — CPU/memory/network sparklines
+
+`src/subsystems/telemetry.py`, backed by `reporting.get_data`. No
+charting library (CT119 has no internet access to fetch one) — hand-rolled
+SVG `<polyline>` sparklines, server-side downsampled to ≤120 points.
+
+### F2 — datasets/snapshots writes (on top of F1)
 
 - **Write path** (`src/subsystems/datasets.py`, `snapshots.py`):
   `create`/`update`/`delete` (datasets) and `create`/`delete` (snapshots),
@@ -35,8 +87,7 @@ against any instance in this repo's tests or code; the operator connects
 - **Post-write verify + audit**, every outcome (`ok`/`pending`/
   `verify_failed`/`error`) logged, never auto-retried.
 - See `CHANGELOG.md` `[0.3.0]` for the full write-flow detail and the
-  sync-vs-async design decision (unconfirmed without live access — designed
-  conservatively per this phase's explicit instruction).
+  sync-vs-async design decision.
 
 ## What's in F1 (on top of F0)
 
@@ -176,26 +227,22 @@ top, see above.)
   the only instance this plugin talks to. Add it if/when a future instance
   proves `vm.query` errors and `virt.instance.query` answers instead.
 
-## Pendiente de F2-deploy / F3+ (explicitly out of scope here)
+## Known gaps / explicitly out of scope
 
-- **`websocket-client` vendoring.** CT119 has no external DNS/internet
-  access. `requirements.txt` declares the dependency, but making it
-  available offline (vendored into the plugin's cache dir, or pre-installed
-  from a LAN-reachable mirror) is deploy work, not build work.
-- **The real `svc-pegaprox-rw` account and the first live write against
-  `.64`** — both require explicit operator confirmation in a separate
-  session (brief §0.5), same order as F0/F1: build with fakes → review →
-  operator verifies live.
-- No writers on pools/shares/replication/apps-vms/system — F3+ per the
-  brief's phase table, behind the same dry-run/confirm/audit write-path.
-- No job poller — an async create/delete (if TrueNAS 25.10.1 turns out to
-  wrap these in a job) is reported as `pending` with a re-check path, not
+- **iSCSI CRUD.** An iSCSI "share" is a 3-way join (target + extent +
+  targetextent) — meaningfully bigger than SMB/NFS create/update/delete,
+  which already covers the "share a folder without opening TrueNAS" ask.
+  iSCSI stays read-only.
+- No job poller for the (rare) async writes — a create/delete that comes
+  back as a TrueNAS job is reported as `pending` with a re-check path, not
   actively polled to completion.
 - No `check_cluster_access` per-client RBAC — admin-only gate until a second
   real client is on-boarded.
-- No connection to any instance besides `.64` yet — onboarding a second real
-  client requires explicit operator confirmation in a separate session
-  (brief §0.5).
+- No connection to any instance besides the operator's own `.64` yet —
+  onboarding a second real client requires explicit operator confirmation in
+  a separate session, same review discipline as every write phase above.
+- `smart.test.results` (SMART data) was dropped, not deferred — this
+  TrueNAS version has no `smart.*` method namespace at all.
 
 ## Development
 
