@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.4] - 2026-07-21 (default landing tab: Fleet, not Overview)
+
+Operator request: with 2+ instances configured, Fleet — the
+cross-instance summary, no instance selection required — is a more
+useful landing tab than Overview, which needs an instance already
+picked and only ever shows that one instance's state. Swapped the
+`active` class (nav button + section) from `overview` to `fleet` in the
+static markup; no other bootstrap logic needed changing since
+`refreshTab(activeTabName())` already reads whichever tab is marked
+active and Fleet's own fetch path is already instance-independent.
+Updated the one test that pinned Overview as the default (itself a fix
+for an even older default, Settings).
+
 ## [0.10.3] - 2026-07-21 (frontend: never let a non-JSON response crash-parse)
 
 0.10.2 fixed the SLOWNESS half of "Unexpected token '<'" (backend now

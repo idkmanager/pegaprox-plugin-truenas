@@ -78,15 +78,20 @@ def test_pools_tab_renders_a_status_card_grid_not_a_plain_table():
     assert "poolRow(disks.errored === 0, 'Disks with Errors'" in html
 
 
-def test_overview_is_the_default_active_tab_not_settings():
-    """Live feedback (2026-07-20): the plugin always opened on Settings —
-    dating back to F0 when Settings was the only tab with anything to show.
-    Now that real instances exist, Overview must be the default tab, both
-    for the nav button and its section, and Settings must not be."""
+def test_fleet_is_the_default_active_tab_not_overview_or_settings():
+    """Live feedback: the plugin opened on Settings (F0, when Settings was
+    the only tab with anything to show), then Overview (2026-07-20, once
+    real instances existed but before a Fleet tab existed to summarize
+    them all). Live feedback 2026-07-21: with 2+ instances configured,
+    Fleet — the cross-instance summary, no instance selection required —
+    is the more useful landing tab; Overview needs an instance picked
+    first and shows only ONE instance's state."""
     html = _read_ui()
-    assert '<button data-tab="overview" class="active">' in html
+    assert '<button data-tab="fleet" class="active">' in html
+    assert '<button data-tab="overview" class="active">' not in html
     assert '<button data-tab="settings" class="active">' not in html
-    assert '<section class="tab active" id="tab-overview">' in html
+    assert '<section class="tab active" id="tab-fleet">' in html
+    assert '<section class="tab active" id="tab-overview">' not in html
     assert '<section class="tab active" id="tab-settings">' not in html
 
 
