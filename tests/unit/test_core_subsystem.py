@@ -6,6 +6,8 @@ slowest single call, without weakening ``safe_call``'s per-spec isolation."""
 
 import time
 
+import pytest
+
 from core.errors import TrueNASConnectionError
 from core.subsystem import parallel_safe_calls
 
@@ -64,3 +66,26 @@ def test_one_failing_spec_does_not_affect_the_others():
     assert results[1][0] == 'DEGRADED'
     assert 'appliance unreachable' in results[1][1]
     assert results[2] == ('fine', None)
+
+
+def test_non_truenas_exception_propagates_same_as_sequential_safe_call():
+    """``safe_call`` only catches ``TrueNASError`` — a programming bug
+    (e.g. a ``TypeError`` from a subsystem's own code) is NOT swallowed,
+    it raises straight out. The parallel path must have the same parity:
+    a bug in one spec must surface loudly, not vanish into a degraded
+    default alongside its siblings' results."""
+    def buggy():
+        raise TypeError('not a TrueNASError — a real bug')
+
+    def ok():
+        return 'fine'
+
+    with pytest.raises(TypeError, match='not a TrueNASError'):
+        parallel_safe_calls([
+            ('ok', ok, None),
+            ('buggy', buggy, None),
+        ])
+
+
+def test_empty_specs_returns_empty_list():
+    assert parallel_safe_calls([]) == []

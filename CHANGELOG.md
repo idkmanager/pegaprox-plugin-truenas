@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.1] - 2026-07-21 (QA hardening on 0.10.0's parallel_safe_calls)
+
+Fable code audit of 0.10.0 (GO, max severity P3) found two cheap gaps,
+both fixed:
+
+- `parallel_safe_calls([])` would have raised `ValueError` from
+  `ThreadPoolExecutor(max_workers=0)` — no caller passes an empty list
+  today, but the guard costs nothing. Now returns `[]`.
+- The non-`TrueNASError` exception path (a real programming bug in one
+  spec, e.g. a `TypeError`) was already correct — it propagates exactly
+  like a sequential `safe_call` would, never silently swallowed — but had
+  no explicit test. Added one.
+- 357 tests total (355 + these 2).
+
 ## [0.10.0] - 2026-07-21 (perf: parallelize multi-collection reads)
 
 Operator reported the plugin felt slow to load/sync after onboarding a

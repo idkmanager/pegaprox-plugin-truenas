@@ -42,6 +42,8 @@ def parallel_safe_calls(specs):
     behavior: each spec still degrades independently exactly like a
     sequential ``safe_call`` would.
     """
+    if not specs:
+        return []
     with ThreadPoolExecutor(max_workers=len(specs)) as pool:
         futures = [pool.submit(safe_call, label, fn, default) for label, fn, default in specs]
         return [f.result() for f in futures]
