@@ -29,10 +29,14 @@ class FakeTransport:
     def __init__(self):
         self._inbox = queue.Queue()
         self.sent = []
+        self.pings = []
         self.closed = False
 
     def send(self, raw):
         self.sent.append(raw)
+
+    def ping(self, payload=''):
+        self.pings.append(payload)
 
     def recv(self):
         item = self._inbox.get()
@@ -69,6 +73,11 @@ def _shutdown(client, ft):
 
 
 def _client_with(ft, **kwargs):
+    # keepalive disabled by default: this helper backs the vast majority of
+    # tests in this file, none of which care about the keepalive thread —
+    # a test that DOES (see the keepalive section near the end) passes
+    # keepalive_interval_s explicitly to override this.
+    kwargs.setdefault('keepalive_interval_s', 0)
     return TrueNASWSClient('truenas.example', 443,
                             transport_factory=lambda *a, **k: ft, **kwargs)
 
@@ -1405,3 +1414,67 @@ def test_scenario_c_stress_many_threads_racing_ensure_logged_in_never_double_log
     assert len(login_frames) == 1
     assert client.needs_auth is False
     assert client.is_authenticated is True
+
+
+# ---------------------------------------------------------------------------
+# Keepalive: root-caused live 2026-07-21 by reading TrueNAS's own
+# /etc/nginx/nginx.conf directly on the real instance — the `/api` location
+# (what /api/current, this client's actual endpoint, falls under) has no
+# proxy_read_timeout/proxy_send_timeout override, so it inherits nginx's
+# compiled-in 60s default (confirmed: /websocket/shell right next to it
+# DOES override it, to 7d — the plain /api location just never got the
+# same treatment). A connection sitting idle for 60s+ gets closed by
+# nginx itself, independent of anything this client does — which is
+# exactly what the F4a poller's 60s-silent-then-burst cadence hit.
+# ---------------------------------------------------------------------------
+
+def test_keepalive_sends_a_ping_at_the_configured_interval():
+    ft = FakeTransport()
+    client = _client_with(ft, keepalive_interval_s=0.05, sleep_fn=lambda s: None)
+    client.connect()
+
+    assert _wait_for(lambda: len(ft.pings) >= 2, timeout=2)
+    _shutdown(client, ft)
+
+
+def test_keepalive_disabled_by_zero_interval_sends_no_pings():
+    ft = FakeTransport()
+    client = _client_with(ft, keepalive_interval_s=0, sleep_fn=lambda s: None)
+    client.connect()
+
+    time.sleep(0.15)  # long enough to have fired at least once if enabled
+    assert ft.pings == []
+    _shutdown(client, ft)
+
+
+def test_keepalive_stops_after_the_connection_is_closed():
+    ft = FakeTransport()
+    client = _client_with(ft, keepalive_interval_s=0.05, sleep_fn=lambda s: None)
+    client.connect()
+    assert _wait_for(lambda: len(ft.pings) >= 1, timeout=2)
+
+    client.close()
+    count_at_close = len(ft.pings)
+    time.sleep(0.2)  # several intervals' worth — must NOT keep growing
+    assert len(ft.pings) == count_at_close
+
+
+def test_keepalive_survives_a_failed_ping_without_killing_the_thread():
+    """A ping attempt landing on an already-dead socket must not crash the
+    keepalive thread — it should just log and keep trying on the next
+    interval (or stop cleanly once the reader thread tears the connection
+    down for real)."""
+    ft = FakeTransport()
+
+    class _PingBoom(FakeTransport):
+        def ping(self, payload=''):
+            raise OSError('simulated: socket not writable')
+
+    boom_ft = _PingBoom()
+    client = _client_with(boom_ft, keepalive_interval_s=0.05, sleep_fn=lambda s: None)
+    client.connect()
+
+    assert _wait_for(lambda: client._keepalive_thread.is_alive(), timeout=1)
+    time.sleep(0.15)  # several failed-ping cycles
+    assert client._keepalive_thread.is_alive()
+    _shutdown(client, boom_ft)

@@ -80,6 +80,16 @@ WRITE_TIMEOUT = 60.0
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 DEFAULT_BACKOFF_BASE_S = 1.0
 DEFAULT_BACKOFF_CAP_S = 30.0
+# Root-caused live 2026-07-21 (F4a poller incident): TrueNAS's own nginx,
+# fronting middlewared on the WebSocket port, has NO proxy_read_timeout/
+# proxy_send_timeout override on the `/api` location (confirmed by reading
+# /etc/nginx/nginx.conf directly on .64 — /websocket/shell explicitly sets
+# 7d, but the plain /api location used by /api/current does not) — so it
+# inherits nginx's compiled-in 60s default. A connection with no traffic
+# for 60s gets silently closed by nginx itself, independent of anything
+# this client does. 25s keeps well clear of that with margin, regardless
+# of how sparse application-level polling is.
+DEFAULT_KEEPALIVE_INTERVAL_S = 25.0
 
 
 def _default_transport_factory(url, verify_tls, timeout, tls_server_name=None):
@@ -163,6 +173,7 @@ class TrueNASWSClient:
                  max_reconnect_attempts=DEFAULT_MAX_RECONNECT_ATTEMPTS,
                  backoff_base_s=DEFAULT_BACKOFF_BASE_S,
                  backoff_cap_s=DEFAULT_BACKOFF_CAP_S,
+                 keepalive_interval_s=DEFAULT_KEEPALIVE_INTERVAL_S,
                  sleep_fn=time.sleep):
         self.host = host
         self.port = port
@@ -177,6 +188,10 @@ class TrueNASWSClient:
         self.max_reconnect_attempts = max_reconnect_attempts
         self.backoff_base_s = backoff_base_s
         self.backoff_cap_s = backoff_cap_s
+        # Falsy (0/None) disables the keepalive thread entirely — every
+        # existing test that doesn't care about this stays unaffected
+        # since it only sends a frame the fake transport just records.
+        self.keepalive_interval_s = keepalive_interval_s
         self._sleep = sleep_fn
         self._transport_factory = transport_factory or _default_transport_factory
 
@@ -246,6 +261,8 @@ class TrueNASWSClient:
 
         self._reader_thread = None
         self._stop_reader = threading.Event()
+
+        self._keepalive_thread = None
 
     # -- public state -------------------------------------------------------
 
@@ -318,6 +335,14 @@ class TrueNASWSClient:
             self._reader_thread = threading.Thread(
                 target=self._read_loop, name=f'truenas-ws-{self.host}', daemon=True)
             self._reader_thread.start()
+            if self.keepalive_interval_s:
+                # Shares _stop_reader with the reader thread: both must stop
+                # at exactly the same lifecycle points (teardown/close), and
+                # both get a fresh start on the same connect() that clears it.
+                self._keepalive_thread = threading.Thread(
+                    target=self._keepalive_loop, name=f'truenas-keepalive-{self.host}',
+                    daemon=True)
+                self._keepalive_thread.start()
             log.info(f'[truenas] connected to {self.host}:{self.port}')
 
     def close(self):
@@ -566,6 +591,34 @@ class TrueNASWSClient:
             if not self._connected or self._ws is None:
                 raise TrueNASConnectionError('not connected')
             self._ws.send(raw)
+
+    def _keepalive_loop(self):
+        """Sends a WebSocket-protocol PING every ``keepalive_interval_s`` —
+        see the constant's docstring for why: TrueNAS's own nginx has no
+        proxy_read_timeout/proxy_send_timeout override on the location that
+        proxies ``/api/current`` to middlewared, so it silently closes an
+        idle connection after its 60s default. A PING (RFC 6455 requires
+        the peer to answer with a PONG) is real traffic in both directions
+        at the TCP level nginx is actually timing — plain relayed bytes,
+        not a parsed WebSocket frame from nginx's point of view — so it
+        resets the timeout without adding any JSON-RPC noise or consuming
+        a request id.
+
+        Shares ``_stop_reader`` with the reader thread (see ``connect()``):
+        both threads belong to the exact same connection generation and
+        must stop together. A failed ping is NOT this loop's problem to
+        recover from — it just means the socket is likely already dead,
+        which the reader thread's own ``recv()`` will discover and drive
+        the normal reconnect through; logged at debug so a healthy-but-
+        momentarily-busy send doesn't spam warnings.
+        """
+        while not self._stop_reader.wait(self.keepalive_interval_s):
+            try:
+                with self._send_lock:
+                    if self._connected and self._ws is not None:
+                        self._ws.ping()
+            except Exception as e:
+                log.debug(f'[truenas] keepalive ping to {self.host}:{self.port} failed: {e}')
 
     def _read_loop(self):
         while not self._stop_reader.is_set():

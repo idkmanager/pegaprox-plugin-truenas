@@ -42,13 +42,13 @@ def register(app=None):
     for path, handler in routes_api.ROUTES.items():
         register_plugin_route(PLUGIN_ID, path, handler)
     log.info(f'[{PLUGIN_ID}] Registered {len(routes_api.ROUTES)} routes')
-    # TEMPORARILY DISABLED 2026-07-21: live on CT119, the poller's periodic
-    # _get_authenticated_connection() calls correlate with real TrueNAS
-    # sockets dropping every ~60s (poll.slow_s) and a subsequent relogin
-    # being rejected ("unexpected authenticator run state") — both
-    # instances ended up marked unreachable, which would also break
-    # browser-driven routes sharing the same cached connection. Disabled
-    # here while the root cause (likely a race between this and
-    # ws_client's own _background_reconnect) is investigated properly —
-    # re-enable only after a real fix, not a guess.
-    # routes_api.start_poller()
+    # RE-ENABLED 2026-07-21: was temporarily disabled after both TrueNAS
+    # instances got marked permanently unreachable on first deploy. Root
+    # cause confirmed by reading /etc/nginx/nginx.conf directly on .64: the
+    # `/api` location (what /api/current is proxied through) has no
+    # proxy_read_timeout override, so it inherits nginx's 60s default —
+    # the poller's 60s-silent-then-burst cadence hit that exactly. Fixed
+    # with a 25s WebSocket keepalive ping in ws_client.py
+    # (DEFAULT_KEEPALIVE_INTERVAL_S) plus the separate ensure_logged_in
+    # auth-race fix this incident also surfaced. See CHANGELOG.md v0.14.0.
+    routes_api.start_poller()

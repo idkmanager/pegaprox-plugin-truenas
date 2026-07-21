@@ -1,6 +1,34 @@
 # Changelog
 
-## [0.14.0] - 2026-07-21 (background poller + edge-triggered notifications) — **poller SHIPPED DISABLED, see incident below**
+## [0.14.0] - 2026-07-21 (background poller + edge-triggered notifications)
+
+**Update, same day — root cause confirmed, poller RE-ENABLED.** The drop
+cause below was diagnosed definitively, not guessed: read
+`/etc/nginx/nginx.conf` directly on the real `.64` instance (documented
+SSH access, `idkmanager-infra` skill). The `location /api` block — what
+`/api/current` (this client's actual endpoint) falls under via nginx's
+longest-prefix matching — has **no** `proxy_read_timeout`/
+`proxy_send_timeout` override, confirmed by contrast: the sibling
+`location /websocket/shell` explicitly sets both to `7d` right next to it.
+Nginx's compiled-in default is **60s**. A connection with no traffic for
+60s gets closed by nginx itself — matching the observed drops exactly,
+independent of anything the poller's Python code does.
+
+**Fix**: `TrueNASWSClient` now runs a keepalive thread (`ws_client.py`,
+`DEFAULT_KEEPALIVE_INTERVAL_S = 25.0`) sending a WebSocket-protocol PING
+every 25s on every connected client — plain relayed bytes from nginx's
+point of view (it doesn't parse WebSocket frames once upgraded), so it
+resets the idle timeout without adding JSON-RPC noise or consuming a
+request id. Shares lifecycle with the existing reader thread (same
+`_stop_reader` event — starts/stops together, same connection
+generation). 4 new tests (fires at the configured interval, disabled by
+`keepalive_interval_s=0`, stops on close, survives a failed ping without
+killing the thread). `routes_api.start_poller()` is uncommented again in
+`__init__.py`.
+
+448 tests green total (4 more than the disabled-poller commit).
+
+## [0.14.0] - 2026-07-21 (background poller + edge-triggered notifications) — original entry, poller initially shipped disabled
 
 Fourth and largest item of the config-audit backlog: the plugin had zero
 proactive alerting — the only way to notice a problem was to have the
