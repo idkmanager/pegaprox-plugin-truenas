@@ -50,6 +50,7 @@ from core.errors import TrueNASAuthError, TrueNASError
 from core.subsystem import ConfirmationRequired, safe_call
 import subsystems.datasets as datasets_mod
 import subsystems.fleet as fleet_mod
+import subsystems.services as services_mod
 import subsystems.snapshots as snapshots_mod
 from subsystems.apps_vms import apps_vms as apps_vms_subsystem
 from subsystems.datasets import datasets as datasets_subsystem
@@ -587,6 +588,53 @@ def _verify_snapshot_deleted(conn, payload, result):
     return found is None, found
 
 
+# F4b — service start/stop/restart. Each op's build/execute pair calls the
+# SAME services_mod.build_control_envelope()/control() so dry-run and
+# execute can never diverge, same guarantee as the dataset/snapshot ops
+# above. verify() re-reads the service and checks the state a successful
+# op should leave it in — restart's target is RUNNING (same as start's),
+# not "different from before", since a restart that leaves the service
+# down is exactly the failure an operator needs surfaced as verify_failed.
+
+def _service_start_build(payload):
+    return services_mod.build_control_envelope('start', payload.get('service'))
+
+
+def _service_start_execute(conn, payload):
+    return services_mod.control(conn, 'start', payload.get('service'))
+
+
+def _service_stop_build(payload):
+    return services_mod.build_control_envelope('stop', payload.get('service'))
+
+
+def _service_stop_execute(conn, payload):
+    return services_mod.control(conn, 'stop', payload.get('service'))
+
+
+def _service_restart_build(payload):
+    return services_mod.build_control_envelope('restart', payload.get('service'))
+
+
+def _service_restart_execute(conn, payload):
+    return services_mod.control(conn, 'restart', payload.get('service'))
+
+
+def _verify_service_state(conn, payload, expected_state):
+    found = services_subsystem.read(conn, payload.get('service'))
+    if found is None:
+        return False, None
+    return str(found.get('state', '')).upper() == expected_state, found
+
+
+def _verify_service_running(conn, payload, result):
+    return _verify_service_state(conn, payload, 'RUNNING')
+
+
+def _verify_service_stopped(conn, payload, result):
+    return _verify_service_state(conn, payload, 'STOPPED')
+
+
 WRITE_OPS = {
     ('datasets', 'create'): {
         'build': _dataset_create_build, 'execute': _dataset_create_execute,
@@ -607,6 +655,18 @@ WRITE_OPS = {
     ('snapshots', 'delete'): {
         'build': _snapshot_delete_build, 'execute': _snapshot_delete_execute,
         'verify': _verify_snapshot_deleted,
+    },
+    ('services', 'start'): {
+        'build': _service_start_build, 'execute': _service_start_execute,
+        'verify': _verify_service_running,
+    },
+    ('services', 'stop'): {
+        'build': _service_stop_build, 'execute': _service_stop_execute,
+        'verify': _verify_service_stopped,
+    },
+    ('services', 'restart'): {
+        'build': _service_restart_build, 'execute': _service_restart_execute,
+        'verify': _verify_service_running,
     },
 }
 

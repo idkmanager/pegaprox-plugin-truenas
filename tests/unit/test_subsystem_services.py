@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""services subsystem: service.query, read-only (F4a). F4b (start/stop/
-restart) is NOT implemented yet — see services.py's module docstring for
-why (SERVICE_WRITE not yet granted to the RW key, verified live)."""
+"""services subsystem: service.query (F4a, read-only) and
+service.start/stop/restart (F4b, write) — see services.py's module
+docstring for the SERVICE_WRITE privilege story."""
+
+import pytest
 
 from subsystems import services
 from tests.unit.fakes import FakeConn
@@ -73,3 +75,50 @@ def test_read_returns_none_for_unknown_service():
 def test_list_returns_same_as_list_services():
     conn = FakeConn({'service.query': [_svc()]})
     assert services.services.list(conn) == [_svc()]
+
+
+# ---------------------------------------------------------------------------
+# F4b: start/stop/restart write path — same build/execute pattern as
+# datasets/snapshots (brief §5).
+# ---------------------------------------------------------------------------
+
+def test_build_control_envelope_start():
+    method, params = services.build_control_envelope('start', 'cifs')
+    assert method == 'service.start'
+    assert params == ['cifs', {'silent': False}]
+
+
+def test_build_control_envelope_stop():
+    method, params = services.build_control_envelope('stop', 'nfs')
+    assert method == 'service.stop'
+    assert params == ['nfs', {'silent': False}]
+
+
+def test_build_control_envelope_restart():
+    method, params = services.build_control_envelope('restart', 'ssh')
+    assert method == 'service.restart'
+    assert params == ['ssh', {'silent': False}]
+
+
+def test_build_control_envelope_rejects_unknown_op():
+    with pytest.raises(ValueError):
+        services.build_control_envelope('frobnicate', 'cifs')
+
+
+def test_build_control_envelope_rejects_empty_service_name():
+    with pytest.raises(ValueError):
+        services.build_control_envelope('start', '')
+
+
+def test_control_calls_the_exact_envelope_the_builder_produced():
+    conn = FakeConn({'service.start': True})
+    result = services.control(conn, 'start', 'cifs')
+    assert result is True
+    assert conn.calls == [('service.start', ['cifs', {'silent': False}])]
+
+
+def test_control_uses_write_timeout_not_the_read_default():
+    from core.ws_client import WRITE_TIMEOUT
+    conn = FakeConn({'service.restart': True})
+    services.control(conn, 'restart', 'cifs')
+    assert conn.timeouts == [WRITE_TIMEOUT]

@@ -125,3 +125,25 @@ def test_fleet_tab_is_never_cached_client_side():
     snapshot, mirroring Overview/Pools' NEVER_CACHE_TABS treatment."""
     html = _read_ui()
     assert "var NEVER_CACHE_TABS = { fleet: true," in html
+
+
+def test_services_tab_exists_with_control_buttons_wired():
+    """F4b (2026-07-20): the Services tab must render Iniciar/Detener/
+    Reiniciar buttons per row and route through the same writesDryRun/
+    writesExecute flow as datasets/snapshots — not a bare read-only table."""
+    html = _read_ui()
+    assert 'data-tab="services"' in html
+    assert 'id="tab-services"' in html
+    assert "services: 'services-body'" in html
+    assert 'function renderServices(body, items)' in html
+    assert "function openServiceForm(op, serviceName)" in html
+    assert "writesDryRun('services', serviceWrite.op" in html
+    assert "writesExecute(state.selectedInstance, 'services', serviceWrite.op" in html
+
+
+def test_services_tab_only_offers_valid_actions_per_current_state():
+    """A running service must offer stop/restart, not start (and vice
+    versa) — guards against a button that would just re-confirm the
+    service is already in that state."""
+    html = _read_ui()
+    assert "var ops = running ? ['stop', 'restart'] : ['start'];" in html

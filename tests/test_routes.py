@@ -1144,3 +1144,69 @@ def test_fleet_handler_caches_within_ttl_without_refetching(plugin, tmp_plugin_d
     routes_api.fleet_handler()
     routes_api.fleet_handler()
     assert calls['n'] == 1  # second call served from cache, no new connection
+
+
+# ---------------------------------------------------------------------------
+# F4b: service start/stop/restart write path — same WRITE_OPS shape as
+# datasets/snapshots.
+# ---------------------------------------------------------------------------
+
+def test_writes_dry_run_service_start_returns_method_and_params(
+        plugin, tmp_plugin_dir, monkeypatch):
+    monkeypatch.setattr(routes_api.request, 'get_json', lambda silent=False: {
+        'subsystem': 'services', 'op': 'start', 'payload': {'service': 'cifs'},
+    })
+    resp = routes_api.writes_dry_run_handler()
+    _, payload = resp
+    assert payload['method'] == 'service.start'
+    assert payload['params'] == ['cifs', {'silent': False}]
+
+
+def test_writes_execute_service_start_verifies_running_state(
+        plugin, tmp_plugin_dir, monkeypatch):
+    _writable_instance(routes_api.CONFIG_PATH)
+    fake_conn = FakeConn({
+        'service.start': True,
+        'service.query': [{'service': 'cifs', 'enable': True, 'state': 'RUNNING'}],
+    })
+    monkeypatch.setattr(routes_api.conn_manager, 'get_rw_connection', lambda inst: fake_conn)
+    monkeypatch.setattr(routes_api.request, 'get_json', lambda silent=False: {
+        'instance_id': 'truenas-test', 'subsystem': 'services', 'op': 'start',
+        'payload': {'service': 'cifs'},
+    })
+    resp = routes_api.writes_execute_handler()
+    _, payload = resp
+    assert payload['ok'] is True
+    assert payload['status'] == 'ok'
+
+
+def test_writes_execute_service_stop_reports_verify_failed_if_still_running(
+        plugin, tmp_plugin_dir, monkeypatch):
+    """The real risk this guards: service.stop returning success while the
+    service never actually stopped must surface as a real problem, not a
+    false 'ok'."""
+    _writable_instance(routes_api.CONFIG_PATH)
+    fake_conn = FakeConn({
+        'service.stop': True,
+        'service.query': [{'service': 'cifs', 'enable': True, 'state': 'RUNNING'}],
+    })
+    monkeypatch.setattr(routes_api.conn_manager, 'get_rw_connection', lambda inst: fake_conn)
+    monkeypatch.setattr(routes_api.request, 'get_json', lambda silent=False: {
+        'instance_id': 'truenas-test', 'subsystem': 'services', 'op': 'stop',
+        'payload': {'service': 'cifs'},
+    })
+    resp = routes_api.writes_execute_handler()
+    _, payload = resp
+    assert payload['ok'] is False
+    assert payload['status'] == 'verify_failed'
+
+
+def test_writes_execute_service_start_403_when_instance_is_readonly(
+        plugin, tmp_plugin_dir, monkeypatch):
+    _seed_instance(routes_api.CONFIG_PATH, readonly=True, api_key_rw='real-secret-rw')
+    monkeypatch.setattr(routes_api.request, 'get_json', lambda silent=False: {
+        'instance_id': 'truenas-test', 'subsystem': 'services', 'op': 'start',
+        'payload': {'service': 'cifs'},
+    })
+    resp, status = routes_api.writes_execute_handler()
+    assert status == 403

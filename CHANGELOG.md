@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.5.0] - 2026-07-20 (F4b: real start/stop/restart of services)
+
+`0.4.0`'s F4a shipped read-only service status because the RW key's
+TrueNAS-side privilege lacked `SERVICE_WRITE` (verified live). The operator
+had no admin credential for `.64` in the vault to widen it either — solved
+by the operator supplying real TrueNAS admin credentials for this instance
+specifically, used once to make a single, minimal, verified privilege
+change, never persisted anywhere in this repo or CT119 beyond the change
+itself:
+
+- Logged in as the real TrueNAS admin (`alfonso`, `FULL_ADMIN`) and found
+  the actual object gating this: `privilege` id `5` ("PegaProx RW"), tied
+  to the `pegaprox_rw` local group (NOT a field on the API key or the user
+  record directly — `user.update`/`api_key.update` have no `roles` field;
+  `privilege.update(id, {roles: [...]})` is the real write path).
+- Appended `SERVICE_WRITE` to that privilege's existing
+  `['DATASET_WRITE', 'DATASET_DELETE', 'SNAPSHOT_WRITE', 'SNAPSHOT_DELETE']`
+  — a single-field, additive `privilege.update` call; `local_groups` and
+  every other field left untouched. Re-verified live with the RW API key
+  itself afterward: `service.start`/`stop`/`restart`/`update` are now
+  visible to it under `core.get_methods` (previously invisible).
+- `subsystems/services.py`: `build_control_envelope(op, service_name)` +
+  `control(conn, op, service_name)`, same pure-builder/real-caller split as
+  datasets/snapshots (brief §5) so dry-run and execute can never describe
+  a different JSON-RPC call. Each op explicitly passes `{'silent': False}`
+  — TrueNAS's own default (`silent: True`) would otherwise turn a failed
+  start/stop/restart into an ordinary falsy result instead of a
+  `TrueNASRPCError` the write path already knows how to report/audit.
+- 3 new `WRITE_OPS` entries (`services.start/stop/restart`) reuse the
+  EXISTING generic `writes/dry-run`/`writes/execute` routes — no new route
+  needed. `verify()` re-reads the service afterward and checks it actually
+  reached the expected state (`RUNNING` for start/restart, `STOPPED` for
+  stop), so a `service.stop` that returns success while the service is
+  still running surfaces as `verify_failed`, never a false `ok`.
+- New "Servicios" tab in the UI: per-service Iniciar/Detener/Reiniciar
+  buttons (only the actions valid for the service's CURRENT state), each
+  going through the same dry-run-preview-then-confirm flow as datasets/
+  snapshots rather than firing on a single click — a stopped SMB/NFS/iSCSI
+  service can break something a real client depends on right now.
+- 286 tests (up from 273).
+
 ## [0.4.0] - 2026-07-20 (F3 Fleet Overview + F4a service status)
 
 Planned with the `arquitecto` (Fable) subagent, then verified live against

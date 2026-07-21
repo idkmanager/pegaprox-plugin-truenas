@@ -172,6 +172,7 @@
   <button data-tab="shares"><svg class="tab-icon" viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.2"/><circle cx="18" cy="6" r="2.2"/><circle cx="18" cy="18" r="2.2"/><path d="M8 11l8-4M8 13l8 4"/></svg>Shares</button>
   <button data-tab="replication"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3"/><path d="M18 3v4h-4M6 21v-4h4"/></svg>Replicación</button>
   <button data-tab="apps"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4.5 7.5L12 12l7.5-4.5M12 12v9"/></svg>Apps/VMs</button>
+  <button data-tab="services"><svg class="tab-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>Servicios</button>
   <button data-tab="settings"><svg class="tab-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.4 7.4 0 0 0 0-2l2-1.5-2-3.4-2.4 1a7.7 7.7 0 0 0-1.7-1L15 3h-4l-.3 2.6a7.7 7.7 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.4 7.4 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a7.7 7.7 0 0 0 1.7 1L11 21h4l.3-2.6a7.7 7.7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5z"/></svg>Settings</button>
 </nav>
 
@@ -250,6 +251,19 @@
   <section class="tab" id="tab-apps">
     <div class="subtab-hint">Solo lectura en F1 — start/stop llega en F3.</div>
     <div id="apps-body" class="empty">Elegí una instancia arriba.</div>
+  </section>
+  <section class="tab" id="tab-services">
+    <div id="services-body" class="empty">Elegí una instancia arriba.</div>
+    <div class="card" id="service-write-card" hidden>
+      <h2 id="service-write-title"></h2>
+      <div id="service-write-preview" class="subtab-hint"></div>
+      <div class="toolbar" style="margin-top:10px">
+        <button class="btn secondary" id="btn-service-preview">Vista previa</button>
+        <button class="btn" id="btn-service-confirm">Confirmar y ejecutar</button>
+        <button class="btn secondary" id="btn-service-cancel">Cancelar</button>
+      </div>
+      <div id="service-write-result" class="subtab-hint"></div>
+    </div>
   </section>
 
   <section class="tab" id="tab-settings">
@@ -585,14 +599,14 @@
     fleet: 'fleet-body',
     overview: 'ov-body', pools: 'pools-body', datasets: 'datasets-body',
     snapshots: 'snapshots-body', shares: 'shares-body',
-    replication: 'replication-body', apps: 'apps-body',
+    replication: 'replication-body', apps: 'apps-body', services: 'services-body',
   };
   // Overview reuses the pools+system data (no dedicated route) — settings
   // has its own load path (loadConfig) and is excluded here.
   var TAB_SUBSYSTEM = {
     overview: 'system', pools: 'pools', datasets: 'datasets',
     snapshots: 'snapshots', shares: 'shares', replication: 'replication',
-    apps: 'apps_vms',
+    apps: 'apps_vms', services: 'services',
   };
 
   // Overview/Pools show live resilver/scrub progress — the brief's whole
@@ -932,6 +946,40 @@
     body.innerHTML = html;
   }
 
+  function renderServices(body, items) {
+    body.className = '';
+    if (!items || !items.length) { body.className = 'empty'; body.innerHTML = 'Sin servicios.'; return; }
+    var html = updatedAtHtml();
+    html += '<table><thead><tr><th>Servicio</th><th>Habilitado</th><th>Estado</th><th></th></tr></thead><tbody>';
+    items.forEach(function (s) {
+      var running = String(s.state || '').toUpperCase() === 'RUNNING';
+      html += '<tr>' +
+        '<td>' + esc(s.service) + '</td>' +
+        '<td>' + (s.enable ? 'sí' : 'no') + '</td>' +
+        '<td>' + badge(running ? 'RUNNING' : (s.state || 'STOPPED')) + '</td>' +
+        '<td class="row-actions" data-service="' + esc(s.service) + '" data-running="' + running + '"></td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    body.innerHTML = html;
+
+    // Buttons wired after innerHTML replaces the DOM (event listeners
+    // can't survive being set on a string) — same pattern as
+    // renderClientList's per-row "Editar" button.
+    body.querySelectorAll('td.row-actions').forEach(function (cell) {
+      var name = cell.dataset.service;
+      var running = cell.dataset.running === 'true';
+      var ops = running ? ['stop', 'restart'] : ['start'];
+      ops.forEach(function (op) {
+        var btn = document.createElement('button');
+        btn.className = 'btn secondary';
+        btn.textContent = SERVICE_OP_LABEL[op];
+        btn.addEventListener('click', function () { openServiceForm(op, name); });
+        cell.appendChild(btn);
+      });
+    });
+  }
+
   function renderSimpleTable(body, items, columns) {
     body.className = '';
     if (!items || !items.length) { body.className = 'empty'; body.innerHTML = 'Sin datos.'; return; }
@@ -1064,6 +1112,7 @@
         ['Estado', function (v) { return v.status && v.status.state || ''; }],
       ]);
     },
+    services: renderServices,
   };
 
   // -------------------------------------------------------------------
@@ -1289,6 +1338,66 @@
         if (res.data.status === 'ok') {
           closeSnapshotForm();
           invalidateAndRefetch('snapshots');
+        }
+      }).catch(function (e) { out.textContent = networkErrorMessage(e); })
+        .finally(function () { btn.disabled = false; });
+  });
+
+  // -- Service control form (F4b: start/stop/restart) --------------------
+  // No fields to type — service name + op are already known from the row
+  // clicked — but still goes through the same dry-run-then-confirm flow as
+  // datasets/snapshots rather than firing on a single click, since a
+  // stopped SMB/NFS/iSCSI service can break something a real client
+  // depends on right now.
+
+  var serviceWrite = { op: null, service: null };
+  var SERVICE_OP_LABEL = { start: 'Iniciar', stop: 'Detener', restart: 'Reiniciar' };
+
+  function openServiceForm(op, serviceName) {
+    serviceWrite = { op: op, service: serviceName };
+    document.getElementById('service-write-card').hidden = false;
+    document.getElementById('service-write-title').textContent =
+      SERVICE_OP_LABEL[op] + ': ' + serviceName;
+    document.getElementById('service-write-preview').textContent = '';
+    document.getElementById('service-write-result').textContent = '';
+  }
+
+  function closeServiceForm() {
+    document.getElementById('service-write-card').hidden = true;
+    serviceWrite = { op: null, service: null };
+  }
+
+  document.getElementById('btn-service-cancel').addEventListener('click', closeServiceForm);
+  document.getElementById('btn-service-preview').addEventListener('click', function () {
+    var btn = this;
+    var out = document.getElementById('service-write-preview');
+    btn.disabled = true;
+    out.textContent = 'Consultando…';
+    writesDryRun('services', serviceWrite.op, { service: serviceWrite.service }).then(function (res) {
+      if (res.status !== 200) {
+        out.textContent = 'Error: ' + ((res.data && res.data.error) || 'desconocido');
+        return;
+      }
+      out.textContent = res.data.method + '(' + JSON.stringify(res.data.params) + ')';
+    }).catch(function (e) { out.textContent = networkErrorMessage(e); })
+      .finally(function () { btn.disabled = false; });
+  });
+  document.getElementById('btn-service-confirm').addEventListener('click', function () {
+    // Same double-submit guard as dataset/snapshot confirm — see their comment.
+    var btn = this;
+    var out = document.getElementById('service-write-result');
+    btn.disabled = true;
+    out.textContent = 'Ejecutando…';
+    writesExecute(state.selectedInstance, 'services', serviceWrite.op, { service: serviceWrite.service })
+      .then(function (res) {
+        if (res.status >= 400) {
+          out.textContent = 'Error: ' + ((res.data && res.data.error) || 'desconocido');
+          return;
+        }
+        out.textContent = 'Resultado: ' + res.data.status;
+        if (res.data.status === 'ok') {
+          closeServiceForm();
+          invalidateAndRefetch('services');
         }
       }).catch(function (e) { out.textContent = networkErrorMessage(e); })
         .finally(function () { btn.disabled = false; });
