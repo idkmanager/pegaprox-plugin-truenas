@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.11.0] - 2026-07-21 (charts: ring gauges, bar-list rankings, interactive sparklines)
+
+Operator request: "mejora las vistas, gráficos más bonitos e interactivos"
+after seeing the core PegaProx panel's own Overview (donut utilization
+rings + a ranked top-consumers list). Applied the same visual language to
+Fleet/Overview/Pools — still hand-rolled SVG/CSS, no charting library
+(no build step, no CDN access from CT119, same constraint the telemetry
+sparklines were already built under).
+
+- New `ringGauge(pct, opts)` — animated SVG donut gauge (stroke-dashoffset,
+  double-rAF grow-in so the fill actually animates on first render instead
+  of snapping straight to its final value). Native `<title>` tooltip for
+  the exact percentage + detail on hover. Used for Fleet's aggregate
+  capacity card and, per pool, on the Pools & Discos tab — tone (ok/warn/
+  err) follows the same real health signal already used elsewhere
+  (`fleetStatusClass`/`p.healthy`), never usage% alone, so a pool/instance
+  that's unhealthy for an unrelated reason (a down service, a degraded
+  vdev) doesn't get painted a calm color just because capacity is low.
+  First pass used a 30-44px "mini" ring for Fleet's per-instance cards;
+  dropped after visual QA showed a ring that small reads as an ambiguous
+  loading-spinner blob rather than a legible gauge — replaced with a slim
+  bar (below) instead, which measurably read correctly at that size.
+- New `barListRow()` — ranked horizontal bar list, replacing Fleet's
+  "Pools con mayor uso" plain table and used as the compact per-instance
+  usage indicator on Fleet's pool cards. Same grow-in animation as the
+  ring.
+- Telemetry sparklines (CPU/memory/network) gained a gradient area fill
+  under the line and real hover interactivity: a crosshair dot + tooltip
+  showing the exact value and timestamp at the cursor's x position
+  (`wireSparklineInteractivity`, wired once per Overview render the same
+  way renderServices/renderShares/renderAppsVms already wire their row
+  buttons post-innerHTML). `renderSparkline`/`renderDualSparkline` keep
+  their exact signatures and call sites — only their internals and return
+  markup changed.
+- "Pools con mayor uso" + "Actividad reciente" now sit in a responsive
+  `.charts-grid` (`auto-fit, minmax(360px, 1fr)`) — side by side on a wide
+  panel, stacked on a narrow one — rather than always stacking full-width.
+- Existing `.progress` scrub-progress bars (Overview resilver/scrub,
+  Pools scan) now animate their fill in too, via the same grow-in
+  mechanism (`animateFills`), instead of snapping to their final width.
+- Verified: 363 tests green (no renderer signature or tested markup
+  string touched — `poolRow('Pool Status'...)`/`poolRow('Disks with
+  Errors'...)`, `class="pool-grid"`, the default-active-Fleet-tab
+  markup, and `NEVER_CACHE_TABS` are all untouched). Visually verified
+  live in a browser against a local mock backend (Fleet/Overview/Pools,
+  hover tooltips, and a 420px narrow viewport to confirm the panel's
+  iframe embed doesn't overflow) before deploying.
+
+🔴 **Separate bug found DURING this deploy, unrelated to the charts
+themselves**: `install.sh` redeployed onto CT119 (an already-installed
+instance, not a fresh one) silently served the OLD plugin.html while
+`manifest.json` correctly reported 0.11.0 — a half-applied deploy with no
+error. Root cause and fix below.
+
+## install.sh — fix a silent half-applied-redeploy bug (found live 2026-07-21)
+
+`cp -rf "$SRC/$f" "$DEST/$f"` for a directory item (`src`) copies INTO an
+already-existing destination instead of replacing its contents, nesting
+the whole tree at `$DEST/src/src`. A fresh install never hits this
+(`$DEST/src` doesn't exist yet); a REdeploy — the common case after the
+first install — silently left `$DEST/src/ui/plugin.html` (the actually-
+served file) stale underneath the newly-nested `$DEST/src/src/ui/plugin.html`,
+while `manifest.json` (a plain file, unaffected by this directory-specific
+bug) correctly showed the new version. Caught by comparing the deployed
+file's md5 against the repo's — they didn't match despite `install.sh`
+printing success and the version string being right.
+
+- Fixed both copy loops (into `$DEST` and into the `$CACHE_DIR` persistence
+  cache) to `rm -rf` each destination item immediately before `cp -rf`ing
+  the source over it — the same pattern `truenas-maintenance.sh` already
+  used correctly (it was never affected by this bug; only manual
+  `install.sh` reruns were).
+- New `tests/test_install_sh.py`: pins the fixed source pattern (and
+  rejects the old bare-`cp -rf` one reappearing), plus a real subprocess
+  test proving `rm -rf dest && cp -rf src dest` actually replaces an
+  existing destination without nesting on this platform's bash/cp — and a
+  companion test proving the ORIGINAL unfixed pattern really does
+  reproduce the bug here too (so the fix's test isn't accidentally a
+  tautology). `install.sh` itself needs root (writes `/etc/truenas-
+  plugin.conf`, talks to systemd) so it can't be run end-to-end from an
+  unprivileged test box — these tests target the exact copy semantics
+  instead, which is the part that's actually platform-dependent.
+- The live CT119 deploy was repaired by hand (`rm -rf` the nested
+  `src/src` in both `$DEST` and `$CACHE_DIR`, re-`cp -r` from the correct
+  source, `chown`, `systemctl restart pegaprox`) and reverified: deployed
+  `plugin.html` md5 now matches the repo exactly, no nested directory in
+  either location, service active.
+
 ## [0.10.4] - 2026-07-21 (default landing tab: Fleet, not Overview)
 
 Operator request: with 2+ instances configured, Fleet — the

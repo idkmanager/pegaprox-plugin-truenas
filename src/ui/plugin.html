@@ -74,8 +74,9 @@
   }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 16px; margin-bottom: 16px;
+    padding: 16px; margin-bottom: 16px; transition: border-color 200ms var(--ease-out);
   }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); }
   .card h2 { font-size: 14px; margin: 0 0 12px; }
   .client-group { margin-bottom: 20px; }
   .client-group > h3 {
@@ -121,6 +122,7 @@
   a.link { color: var(--accent); }
   .pool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-bottom: 16px; }
   .pool-card h2 { font-size: 14px; margin: 0 0 10px; }
+  .pool-card .ring-row { margin-bottom: 6px; }
   .pool-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 4px 0; }
   .pool-row .row-icon { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
   .pool-row.ok .row-icon { color: var(--ok); }
@@ -144,7 +146,58 @@
   .stat-label .card-icon { width: 14px; height: 14px; opacity: .7; }
   .stat { font-size: 24px; font-weight: 600; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
   .progress { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 8px; }
-  .progress > div { height: 100%; background: var(--accent); transition: width 400ms var(--ease-out); }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width 650ms var(--ease-out); }
+
+  /* -- Charts: ring gauges, bar-list rankings, sparkline tooltips ------
+     Hand-rolled SVG/CSS, no charting library — see renderSparkline's own
+     comment further down for why. Every fill/width here starts at 0 and
+     is grown to its real value by animateFills() (a double
+     requestAnimationFrame: paint the 0-state once so the browser commits
+     it, THEN set the real target so the CSS transition actually plays
+     instead of snapping straight to its final value on first render). */
+  .ring-row { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
+  .ring-gauge { width: 104px; height: 104px; flex-shrink: 0; }
+  .ring-gauge .ring-track { fill: none; stroke: var(--border); stroke-width: 8; }
+  .ring-gauge .ring-fill {
+    fill: none; stroke: var(--accent); stroke-width: 8; stroke-linecap: round;
+    transform: rotate(-90deg); transform-origin: 50% 50%;
+    transition: stroke-dashoffset 650ms var(--ease-out);
+  }
+  .ring-gauge .ring-fill.stat-warn { stroke: var(--warn); }
+  .ring-gauge .ring-fill.stat-err { stroke: var(--err); }
+  .ring-gauge .ring-value {
+    font-size: 19px; font-weight: 600; fill: var(--text); text-anchor: middle;
+    font-variant-numeric: tabular-nums;
+  }
+  .ring-gauge .ring-caption {
+    font-size: 8.5px; fill: var(--muted); text-anchor: middle;
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .bar-list-row {
+    display: grid; grid-template-columns: minmax(90px, 1fr) minmax(70px, 2fr) auto;
+    align-items: center; gap: 10px; padding: 6px 0;
+  }
+  .bar-list-row + .bar-list-row { border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+  .bar-list-label { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-list-sub { color: var(--muted); }
+  .bar-list-track { height: 7px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  .bar-list-fill { height: 100%; width: 0; border-radius: 999px; background: var(--accent); transition: width 650ms var(--ease-out); }
+  .bar-list-fill.stat-warn { background: var(--warn); }
+  .bar-list-fill.stat-err { background: var(--err); }
+  .bar-list-value { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--muted); text-align: right; white-space: nowrap; }
+
+  .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; align-items: start; }
+
+  .sparkline-wrap { position: relative; }
+  .sparkline-wrap svg.sparkline { cursor: crosshair; }
+  .sparkline-dot { fill: var(--bg); stroke: var(--accent); stroke-width: 2; opacity: 0; transition: opacity 120ms var(--ease-out); pointer-events: none; }
+  .sparkline-tooltip {
+    position: absolute; pointer-events: none; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 8px; font-size: 11.5px; white-space: nowrap; color: var(--text);
+    box-shadow: 0 4px 12px rgba(0,0,0,.35); z-index: 5;
+  }
+  .sparkline-tooltip .t-time { color: var(--muted); margin-left: 6px; }
+
   .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
   .badge.ONLINE, .badge.true { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
   .badge.DEGRADED, .badge.FAULTED, .badge.UNAVAIL, .badge.false { background: color-mix(in srgb, var(--err) 15%, transparent); color: var(--err); }
@@ -862,6 +915,65 @@
     return 'stat-ok';
   }
 
+  // -- Charts: ring gauges + bar-list rankings ---------------------------
+  // Hand-rolled SVG, same "no charting library" rationale as the telemetry
+  // sparklines further down. Every fill starts at 0 and animateFills()
+  // grows it to the real value on next paint (see the CSS comment above
+  // .ring-row for why: a plain inline width/offset never animates in,
+  // since there's no prior state to transition FROM on first render).
+  var RING_R = 42, RING_C = 2 * Math.PI * RING_R;
+
+  function pctTone(pct, warnAt) {
+    return pct >= (warnAt == null ? 80 : warnAt) ? 'stat-warn' : '';
+  }
+
+  function ringGauge(pct, opts) {
+    opts = opts || {};
+    var safePct = Math.max(0, Math.min(100, pct || 0));
+    var offset = RING_C * (1 - safePct / 100);
+    var tone = opts.tone || pctTone(safePct, opts.warnAt);
+    var titleText = (opts.caption ? opts.caption + ': ' : '') + safePct.toFixed(1) + '%' +
+      (opts.detail ? ' (' + opts.detail + ')' : '');
+    return '<svg class="ring-gauge" viewBox="0 0 100 100" role="img" aria-label="' + esc(titleText) + '">' +
+      '<title>' + esc(titleText) + '</title>' +
+      '<circle class="ring-track" cx="50" cy="50" r="' + RING_R + '"/>' +
+      '<circle class="ring-fill ' + tone + '" cx="50" cy="50" r="' + RING_R + '" ' +
+        'stroke-dasharray="' + RING_C.toFixed(1) + '" style="stroke-dashoffset:' + RING_C.toFixed(1) + '" ' +
+        'data-grow-to="' + offset.toFixed(1) + '" data-grow-prop="stroke-dashoffset"/>' +
+      '<text class="ring-value" x="50" y="46">' + esc(opts.label != null ? opts.label : safePct.toFixed(0) + '%') + '</text>' +
+      '<text class="ring-caption" x="50" y="63">' + esc(opts.caption || '') + '</text>' +
+      '</svg>';
+  }
+
+  function barListRow(label, sub, pct, valueText, tone) {
+    var safePct = Math.max(0, Math.min(100, pct || 0));
+    return '<div class="bar-list-row">' +
+      '<div class="bar-list-label" title="' + esc(label) + '">' + esc(label) +
+        (sub ? ' <span class="bar-list-sub">' + esc(sub) + '</span>' : '') + '</div>' +
+      '<div class="bar-list-track"><div class="bar-list-fill ' + (tone || pctTone(safePct)) + '" data-grow-to="' + safePct + '%"></div></div>' +
+      '<div class="bar-list-value">' + esc(valueText) + '</div>' +
+      '</div>';
+  }
+
+  // Called once after any body.innerHTML = html that included a ring gauge,
+  // bar-list row, or .progress bar — see the CSS comment for why this needs
+  // a double rAF rather than just setting the target value directly.
+  function animateFills(root) {
+    var els = root.querySelectorAll('[data-grow-to]');
+    if (!els.length) return;
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        els.forEach(function (el) {
+          if (el.dataset.growProp === 'stroke-dashoffset') {
+            el.style.strokeDashoffset = el.dataset.growTo;
+          } else {
+            el.style.width = el.dataset.growTo;
+          }
+        });
+      });
+    });
+  }
+
   function renderFleet(body, payload) {
     body.className = '';
     var agg = payload.aggregate || {};
@@ -882,8 +994,12 @@
       agg.unreachable_count + ' caída(s)</div></div>';
     html += '<div class="card ' + (agg.capacity_pct != null && agg.capacity_pct >= 80 ? 'stat-warn' : 'stat-ok') +
       '"><div class="stat-label">' + ICONS.pools + 'Capacidad agregada</div>' +
-      '<div class="stat">' + (agg.capacity_pct != null ? agg.capacity_pct.toFixed(1) + '%' : '?') + '</div>' +
-      '<div>' + formatBytes(agg.capacity_used) + ' de ' + formatBytes(agg.capacity_size) + '</div></div>';
+      (agg.capacity_pct != null
+        ? '<div class="ring-row">' + ringGauge(agg.capacity_pct, { caption: 'Uso', warnAt: 80 }) +
+          '<div><div style="font-size:13px">' + formatBytes(agg.capacity_used) + '</div>' +
+          '<div class="subtab-hint" style="margin:0">de ' + formatBytes(agg.capacity_size) + '</div></div></div>'
+        : '<div class="stat">?</div>') +
+      '</div>';
     html += '<div class="card ' + (agg.total_alerts ? 'stat-warn' : 'stat-ok') +
       '"><div class="stat-label">' + ICONS.alerts + 'Alertas fleet-wide</div>' +
       '<div class="stat">' + agg.total_alerts + '</div></div>';
@@ -909,21 +1025,31 @@
         html += poolRow(pct < 80, 'Uso',
           formatBytes(inst.capacity_used) + ' / ' + formatBytes(inst.capacity_size) +
           (inst.capacity_size ? ' (' + pct.toFixed(1) + '%)' : ''));
+        // Slim bar restates the SAME 'Uso' row above for fast side-by-side
+        // scanning across many instances — never a second metric, so its
+        // tone must agree with fleetStatusClass() rather than re-deriving
+        // its own from pct alone (an instance can be stat-warn/err for
+        // reasons unrelated to capacity, e.g. a down service, and the bar
+        // shouldn't paint over that as fine).
+        if (inst.capacity_size) {
+          var cardTone = fleetStatusClass(inst);
+          var barTone = cardTone === 'stat-ok' ? pctTone(pct, 80) : cardTone;
+          html += '<div class="bar-list-track" style="margin-top:2px">' +
+            '<div class="bar-list-fill ' + barTone + '" data-grow-to="' + pct + '%"></div></div>';
+        }
       }
       html += '</div>';
     });
     html += '</div>';
 
+    html += '<div class="charts-grid">';
     if (agg.top_pools && agg.top_pools.length) {
-      html += '<div class="card"><h2>Pools con mayor uso</h2><table><thead><tr>' +
-        '<th>Instancia</th><th>Pool</th><th>Uso</th></tr></thead><tbody>';
+      html += '<div class="card"><h2>Pools con mayor uso</h2>';
       agg.top_pools.forEach(function (p) {
-        html += '<tr><td>' + esc(p.instance_name) + '</td><td>' + esc(p.pool) + '</td>' +
-          '<td>' + p.pct.toFixed(1) + '%</td></tr>';
+        html += barListRow(p.pool, p.instance_name, p.pct, p.pct.toFixed(1) + '%');
       });
-      html += '</tbody></table></div>';
+      html += '</div>';
     }
-
     if (agg.activity && agg.activity.length) {
       html += '<div class="card"><h2>Actividad reciente</h2><table><thead><tr>' +
         '<th>Cuándo</th><th>Instancia</th><th>Usuario</th><th>Evento</th></tr></thead><tbody>';
@@ -936,15 +1062,30 @@
     } else {
       html += '<div class="subtab-hint">Sin actividad reciente relevante.</div>';
     }
+    html += '</div>';
 
     body.innerHTML = html;
+    animateFills(body);
   }
 
   // -- Telemetry sparklines (CPU/memory/network) — hand-rolled SVG, no
   // charting library (CT119 has no internet access to fetch one from a
   // CDN). Series are ``[timestamp, value]`` pairs (or ``[ts, rx, tx]`` for
   // network), already downsampled server-side to at most ~120 points.
+  // ``timestamp`` is TrueNAS reporting.get_data's own 'time' column, a
+  // plain Unix-seconds epoch (that endpoint's documented convention,
+  // distinct from the ``{"$date": ms}`` wrapper other TrueNAS datetime
+  // fields use elsewhere in this file, e.g. formatEpochMs) — hover
+  // tooltips below multiply by 1000 before handing it to `Date`.
+  //
+  // chartRegistry holds the raw series + formatter behind each rendered
+  // chart so wireSparklineInteractivity() can look up the right value for
+  // whatever x position the cursor is over — reset on every
+  // renderTelemetryCards() call (Overview never caches, so a stale entry
+  // would just be pointing at a chart that no longer exists in the DOM).
   var SPARKLINE_W = 260, SPARKLINE_H = 56;
+  var chartRegistry = [];
+  var chartIdSeq = 0;
 
   function sparklinePoints(series, valueIndex, width, height, min, max) {
     var range = (max - min) || 1;
@@ -954,6 +1095,28 @@
       var y = v == null ? height : height - ((v - min) / range) * height;
       return (i * stepX).toFixed(1) + ',' + y.toFixed(1);
     }).join(' ');
+  }
+
+  function sparklineY(v, min, max, height) {
+    var range = (max - min) || 1;
+    return v == null ? height : height - ((v - min) / range) * height;
+  }
+
+  function sparklineAreaFill(chartId, linePoints, color) {
+    return '<defs><linearGradient id="spark-grad-' + chartId + '" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.32"/>' +
+      '<stop offset="100%" stop-color="' + color + '" stop-opacity="0"/>' +
+      '</linearGradient></defs>' +
+      '<polygon class="sparkline-area" points="0,' + SPARKLINE_H + ' ' + linePoints + ' ' + SPARKLINE_W + ',' + SPARKLINE_H +
+      '" fill="url(#spark-grad-' + chartId + ')"/>';
+  }
+
+  function sparklineWrap(chartId, inner, valueLabel) {
+    return '<div class="sparkline-wrap" data-chart-id="' + chartId + '">' +
+      '<svg class="sparkline" viewBox="0 0 ' + SPARKLINE_W + ' ' + SPARKLINE_H + '" preserveAspectRatio="none">' +
+      inner + '<circle class="sparkline-dot" r="3"/></svg>' +
+      '<div class="sparkline-tooltip" hidden></div>' +
+      '<div class="sparkline-value">' + valueLabel + '</div></div>';
   }
 
   function renderSparkline(series, opts) {
@@ -967,9 +1130,12 @@
     var points = sparklinePoints(series, 1, SPARKLINE_W, SPARKLINE_H, min, max);
     var last = values.length ? values[values.length - 1] : null;
     var label = last == null ? '?' : (opts.format ? opts.format(last) : last.toFixed(1));
-    return '<svg class="sparkline" viewBox="0 0 ' + SPARKLINE_W + ' ' + SPARKLINE_H + '" preserveAspectRatio="none">' +
-      '<polyline points="' + points + '" fill="none" stroke="' + (opts.color || 'var(--accent)') + '" stroke-width="1.5"/>' +
-      '</svg><div class="sparkline-value">' + esc(label) + '</div>';
+    var color = opts.color || 'var(--accent)';
+    var chartId = chartIdSeq++;
+    chartRegistry[chartId] = { series: series, min: min, max: max, dual: false, format: opts.format };
+    var inner = sparklineAreaFill(chartId, points, color) +
+      '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>';
+    return sparklineWrap(chartId, inner, esc(label));
   }
 
   function renderDualSparkline(series, opts) {
@@ -986,13 +1152,64 @@
     var txPoints = sparklinePoints(series, 2, SPARKLINE_W, SPARKLINE_H, min, max);
     var lastRow = series[series.length - 1];
     var fmt = opts.format || function (v) { return v.toFixed(1); };
-    return '<svg class="sparkline" viewBox="0 0 ' + SPARKLINE_W + ' ' + SPARKLINE_H + '" preserveAspectRatio="none">' +
-      '<polyline points="' + rxPoints + '" fill="none" stroke="var(--ok)" stroke-width="1.5"/>' +
-      '<polyline points="' + txPoints + '" fill="none" stroke="var(--accent)" stroke-width="1.5"/>' +
-      '</svg><div class="sparkline-value">↓' + esc(fmt(lastRow[1])) + ' ↑' + esc(fmt(lastRow[2])) + '</div>';
+    var chartId = chartIdSeq++;
+    chartRegistry[chartId] = { series: series, min: min, max: max, dual: true, format: fmt };
+    var inner = sparklineAreaFill(chartId, rxPoints, 'var(--ok)') +
+      '<polyline points="' + rxPoints + '" fill="none" stroke="var(--ok)" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>' +
+      '<polyline points="' + txPoints + '" fill="none" stroke="var(--accent)" stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>';
+    var label = '↓' + esc(fmt(lastRow[1])) + ' ↑' + esc(fmt(lastRow[2]));
+    return sparklineWrap(chartId, inner, label);
+  }
+
+  // Wired once per Overview render, after its HTML lands in the DOM — the
+  // same "re-query and attach listeners post-innerHTML" pattern renderServices/
+  // renderShares/renderAppsVms already use for their row action buttons.
+  function wireSparklineInteractivity(root) {
+    root.querySelectorAll('.sparkline-wrap[data-chart-id]').forEach(function (wrap) {
+      var chart = chartRegistry[Number(wrap.dataset.chartId)];
+      if (!chart) return;
+      var svg = wrap.querySelector('svg.sparkline');
+      var dot = wrap.querySelector('.sparkline-dot');
+      var tip = wrap.querySelector('.sparkline-tooltip');
+      var stepX = chart.series.length > 1 ? SPARKLINE_W / (chart.series.length - 1) : 0;
+
+      function show(clientX, clientY) {
+        var rect = svg.getBoundingClientRect();
+        if (!rect.width) return;
+        var xFrac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        var idx = Math.round(xFrac * (chart.series.length - 1));
+        var row = chart.series[idx];
+        if (!row) return;
+        var x = idx * stepX;
+        var y = sparklineY(row[1], chart.min, chart.max, SPARKLINE_H);
+        dot.setAttribute('cx', x.toFixed(1));
+        dot.setAttribute('cy', y.toFixed(1));
+        dot.style.opacity = '1';
+        var timeText = row[0] ? new Date(row[0] * 1000).toLocaleTimeString() : '';
+        var valueText = chart.dual
+          ? '↓' + chart.format(row[1]) + ' ↑' + chart.format(row[2])
+          : (chart.format ? chart.format(row[1]) : (row[1] == null ? '?' : row[1].toFixed(1)));
+        tip.innerHTML = esc(valueText) + (timeText ? '<span class="t-time">' + esc(timeText) + '</span>' : '');
+        tip.hidden = false;
+        var leftPx = Math.min(rect.width - 90, Math.max(0, (x / SPARKLINE_W) * rect.width - 30));
+        tip.style.left = leftPx.toFixed(0) + 'px';
+        tip.style.top = '-30px';
+      }
+      function hide() {
+        dot.style.opacity = '0';
+        tip.hidden = true;
+      }
+      svg.addEventListener('mousemove', function (e) { show(e.clientX, e.clientY); });
+      svg.addEventListener('mouseleave', hide);
+      svg.addEventListener('touchstart', function (e) {
+        if (e.touches && e.touches[0]) show(e.touches[0].clientX, e.touches[0].clientY);
+      }, { passive: true });
+    });
   }
 
   function renderTelemetryCards(telemetry) {
+    chartRegistry.length = 0;
+    chartIdSeq = 0;
     var html = '<div class="bento telemetry-row">';
     html += '<div class="card telemetry-card"><div class="stat-label">' + ICONS.system + 'CPU</div>' +
       (telemetry.cpu_error
@@ -1057,7 +1274,7 @@
         var pct = (p.scan && p.scan.percentage) || 0;
         html += '<div style="margin-bottom:10px">' + esc(p.name) + ' — ' +
           esc(p.scan.function || '') + ' ' + pct.toFixed(1) + '%' +
-          '<div class="progress"><div style="width:' + pct + '%"></div></div></div>';
+          '<div class="progress"><div data-grow-to="' + pct + '%"></div></div></div>';
       });
       html += '</div>';
     }
@@ -1075,6 +1292,8 @@
       html += '</tbody></table></div>';
     }
     body.innerHTML = html;
+    animateFills(body);
+    wireSparklineInteractivity(body);
   }
 
   function renderPools(body, data) {
@@ -1088,13 +1307,23 @@
       var usedPct = p.size ? (p.allocated / p.size * 100) : 0;
       html += '<div class="card pool-card">';
       html += '<h2>' + esc(p.name) + '</h2>';
+      // Ring tone follows the pool's OWN health flag first, usage% only as
+      // a fallback — a pool sitting at 40% used but already UNHEALTHY (a
+      // degraded vdev, say) must not paint a calm, low-usage ring.
+      if (p.size) {
+        html += '<div class="ring-row">' + ringGauge(usedPct, {
+          caption: 'Uso',
+          tone: !p.healthy ? 'stat-err' : pctTone(usedPct, 80),
+        }) + '<div><div style="font-size:13px">' + formatBytes(p.allocated) + '</div>' +
+          '<div class="subtab-hint" style="margin:0">de ' + formatBytes(p.size) + '</div></div></div>';
+      }
       html += poolRow(!!p.healthy, 'Pool Status', p.status || '?');
       html += poolRow(usedPct < 80, 'Used Space',
         formatBytes(p.allocated) + ' of ' + formatBytes(p.size) + ' (' + usedPct.toFixed(1) + '%)');
       html += poolRow(disks.errored === 0, 'Disks with Errors', disks.errored + ' of ' + disks.total);
       html += poolRow(!p.scan || p.scan.state !== 'SCANNING', 'Last Scrub', lastScrubText(p.scan));
       if (p.scan && p.scan.state === 'SCANNING') {
-        html += '<div class="progress"><div style="width:' + (p.scan.percentage || 0) + '%"></div></div>';
+        html += '<div class="progress"><div data-grow-to="' + (p.scan.percentage || 0) + '%"></div></div>';
       }
       html += '</div>';
     });
@@ -1114,6 +1343,7 @@
       html += '</tbody></table>';
     }
     body.innerHTML = html;
+    animateFills(body);
   }
 
   function renderServices(body, items) {

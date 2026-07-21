@@ -22,6 +22,14 @@ echo "==> Installing $PLUGIN_ID into $DEST"
 
 mkdir -p "$DEST"
 for f in $RUNTIME_ITEMS; do
+  # rm before cp -r: on a REdeploy (not a fresh install) "$DEST/$f" already
+  # exists, and `cp -rf sourcedir destdir` with an existing destdir copies
+  # INTO it (nests at $DEST/$f/$f) rather than replacing its contents.
+  # Found live 2026-07-21: manifest.json (a plain file, copied fine either
+  # way) showed the new version while src/ui/plugin.html kept serving the
+  # OLD content from underneath the newly-nested src/src/ui/plugin.html —
+  # a half-applied deploy with no error and a misleading version number.
+  rm -rf "$DEST/$f"
   cp -rf "$SRC/$f" "$DEST/$f"
 done
 
@@ -87,7 +95,7 @@ CACHE_DIR="${CACHE_DIR:-/usr/local/lib/truenas}"
 if command -v systemctl >/dev/null 2>&1; then
   echo "==> Installing persistence guard -> $CACHE_DIR"
   mkdir -p "$CACHE_DIR"
-  for f in $RUNTIME_ITEMS; do cp -rf "$SRC/$f" "$CACHE_DIR/$f"; done
+  for f in $RUNTIME_ITEMS; do rm -rf "$CACHE_DIR/$f"; cp -rf "$SRC/$f" "$CACHE_DIR/$f"; done
   cp -f "$SRC/truenas-maintenance.sh" "$CACHE_DIR/truenas-maintenance.sh"
   chmod +x "$CACHE_DIR/truenas-maintenance.sh"
 
