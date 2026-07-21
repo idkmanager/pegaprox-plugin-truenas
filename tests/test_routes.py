@@ -1076,3 +1076,71 @@ def test_writes_execute_403_when_readonly_is_explicit_null(plugin, tmp_plugin_di
     assert status == 403
     _, payload = resp
     assert 'readonly' in payload['error']
+
+
+# ---------------------------------------------------------------------------
+# F4a: services (read-only), same _subsystem_route shape as F1's routes.
+# ---------------------------------------------------------------------------
+
+def test_services_handler_returns_service_list(plugin, tmp_plugin_dir, monkeypatch):
+    _seed_instance(routes_api.CONFIG_PATH)
+    monkeypatch.setattr(routes_api.request, 'args', {'instance_id': 'truenas-test'})
+    fake_conn = FakeConn({'service.query': [
+        {'service': 'cifs', 'enable': True, 'state': 'RUNNING'},
+    ]})
+    monkeypatch.setattr(routes_api.conn_manager, 'get_connection', lambda inst: fake_conn)
+    resp = routes_api.services_handler()
+    _, payload = resp
+    assert payload['data'][0]['service'] == 'cifs'
+
+
+# ---------------------------------------------------------------------------
+# F3: Fleet Overview — fans out over ALL configured instances, no
+# instance_id query param, TTL-cached.
+# ---------------------------------------------------------------------------
+
+def _fleet_fake_conn():
+    return FakeConn({
+        'system.info': {'version': '25.10.1', 'hostname': 'nas1'},
+        'alert.list': [],
+        'pool.query': [{'name': 'tank', 'allocated': 10, 'size': 100, 'healthy': True}],
+        'service.query': [{'service': 'cifs', 'enable': True, 'state': 'RUNNING'}],
+        'audit.query': [],
+    })
+
+
+def test_fleet_handler_aggregates_across_all_instances(plugin, tmp_plugin_dir, monkeypatch):
+    routes_api._fleet_cache['data'] = None  # this test's own cache slot, not touching others
+    _seed_instance(routes_api.CONFIG_PATH)
+    monkeypatch.setattr(routes_api.conn_manager, 'get_connection', lambda inst: _fleet_fake_conn())
+    resp = routes_api.fleet_handler()
+    _, payload = resp
+    assert payload['aggregate']['instance_count'] == 1
+    assert payload['instances'][0]['id'] == 'truenas-test'
+    assert payload['skipped_no_api_key'] == 0
+
+
+def test_fleet_handler_skips_instances_with_no_api_key_configured(
+        plugin, tmp_plugin_dir, monkeypatch):
+    routes_api._fleet_cache['data'] = None
+    _seed_instance(routes_api.CONFIG_PATH, api_key_ro=None)
+    monkeypatch.setattr(routes_api.conn_manager, 'get_connection', lambda inst: _fleet_fake_conn())
+    resp = routes_api.fleet_handler()
+    _, payload = resp
+    assert payload['aggregate']['instance_count'] == 0
+    assert payload['skipped_no_api_key'] == 1
+
+
+def test_fleet_handler_caches_within_ttl_without_refetching(plugin, tmp_plugin_dir, monkeypatch):
+    routes_api._fleet_cache['data'] = None
+    _seed_instance(routes_api.CONFIG_PATH)
+    calls = {'n': 0}
+
+    def counting_get_conn(inst):
+        calls['n'] += 1
+        return _fleet_fake_conn()
+
+    monkeypatch.setattr(routes_api.conn_manager, 'get_connection', counting_get_conn)
+    routes_api.fleet_handler()
+    routes_api.fleet_handler()
+    assert calls['n'] == 1  # second call served from cache, no new connection

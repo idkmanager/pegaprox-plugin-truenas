@@ -9,7 +9,9 @@ register new verbs):
   POST config/save                         -> validate + persist      (admin)
   POST instances/test                      -> connect+login only      (admin)
   GET  system|pools|datasets|snapshots|
-       shares|replication|apps_vms         -> subsystem read (F1)     (storage.view)
+       shares|replication|apps_vms|
+       services                            -> subsystem read (F1/F4a) (storage.view)
+  GET  fleet                               -> cross-instance summary (F3) (storage.view)
 
 Every F1 subsystem route takes ``instance_id`` as a QUERY PARAM (e.g.
 ``GET .../pools?instance_id=datos-64``), not a URL path segment. This is a
@@ -34,6 +36,8 @@ import hashlib
 import json
 import logging
 import os
+import threading
+import time
 
 from flask import request, jsonify, send_file
 
@@ -45,6 +49,7 @@ from core.conn_manager import ConnectionManager
 from core.errors import TrueNASAuthError, TrueNASError
 from core.subsystem import ConfirmationRequired, safe_call
 import subsystems.datasets as datasets_mod
+import subsystems.fleet as fleet_mod
 import subsystems.snapshots as snapshots_mod
 from subsystems.apps_vms import apps_vms as apps_vms_subsystem
 from subsystems.datasets import datasets as datasets_subsystem
@@ -52,6 +57,7 @@ from subsystems.pools import list_disks as pools_list_disks
 from subsystems.pools import pools as pools_subsystem
 from subsystems.pools import temperatures as pools_temperatures
 from subsystems.replication import replication as replication_subsystem
+from subsystems.services import services as services_subsystem
 from subsystems.shares import shares as shares_subsystem
 from subsystems.snapshots import list_tasks as snapshots_list_tasks
 from subsystems.snapshots import snapshots as snapshots_subsystem
@@ -378,6 +384,53 @@ def replication_handler():
 
 def apps_vms_handler():
     return _subsystem_route(apps_vms_subsystem.list)
+
+
+def services_handler():
+    return _subsystem_route(services_subsystem.list)
+
+
+# ---------------------------------------------------------------------------
+# F3: Fleet Overview — fans out over EVERY configured instance concurrently
+# (no ``instance_id`` query param), so it does not go through
+# ``_subsystem_route``. TTL-cached with a bare in-process dict guarded by a
+# lock (not per-user — the underlying data is the same regardless of who is
+# looking) so a UI poll tick never re-hammers every appliance on every
+# request; ``fleet.py``'s own per-RPC ``safe_call`` + per-instance isolation
+# already bounds the cost of a single fetch, this just bounds how often that
+# fetch happens at all.
+# ---------------------------------------------------------------------------
+
+_FLEET_CACHE_TTL_S = 15.0
+_fleet_cache = {'at': 0.0, 'data': None}
+_fleet_cache_lock = threading.Lock()
+
+
+def _fleet_get_conn(inst):
+    return _get_authenticated_connection(inst)
+
+
+def fleet_handler():
+    if (err := _require(PERM_VIEW)):
+        return err
+    now = time.monotonic()
+    with _fleet_cache_lock:
+        if _fleet_cache['data'] is not None and (now - _fleet_cache['at']) < _FLEET_CACHE_TTL_S:
+            return jsonify(_fleet_cache['data'])
+
+    cfg = config_store.load_config(CONFIG_PATH)
+    instances = [i for i in cfg['instances'] if i.get('api_key_ro')]
+    skipped_no_key = len(cfg['instances']) - len(instances)
+    summaries = fleet_mod.fetch_fleet(instances, _fleet_get_conn)
+    payload = {
+        'instances': summaries,
+        'aggregate': fleet_mod.aggregate(summaries),
+        'skipped_no_api_key': skipped_no_key,
+    }
+    with _fleet_cache_lock:
+        _fleet_cache['at'] = now
+        _fleet_cache['data'] = payload
+    return jsonify(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +851,8 @@ ROUTES = {
     'shares': shares_handler,
     'replication': replication_handler,
     'apps_vms': apps_vms_handler,
+    'services': services_handler,
+    'fleet': fleet_handler,
     'writes/dry-run': writes_dry_run_handler,
     'writes/execute': writes_execute_handler,
 }

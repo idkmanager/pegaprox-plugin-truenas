@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.4.0] - 2026-07-20 (F3 Fleet Overview + F4a service status)
+
+Planned with the `arquitecto` (Fable) subagent, then verified live against
+a real TrueNAS-25.10.1 instance before writing any code: `service.query`,
+`core.get_jobs`, and `audit.query` shapes; `TrueNASWSClient`/
+`ConnectionManager` concurrency safety for a multi-instance fan-out; and
+the RW key's actual granted role (confirmed it does NOT include
+`SERVICE_WRITE`).
+
+- **F3 — Fleet Overview**: new `GET fleet` route + `subsystems/fleet.py`.
+  Fans out concurrently (`ThreadPoolExecutor`) over every configured
+  instance, combining `system.info` + `alert.list` + `pool.query` +
+  `service.query` + a filtered `audit.query` per instance, each RPC
+  independently degraded via `safe_call` and each instance isolated so one
+  unreachable/hung appliance never blocks or hides the rest. Every
+  aggregate (instance health counts, fleet-wide capacity %, top pools by
+  usage, merged recent-activity feed) is computed from data the middleware
+  actually returns — no invented metric (e.g. no "top memory consumers":
+  `system.info` carries no RAM utilization field). TTL-cached server-side
+  (15s) so a UI poll tick never re-hammers every appliance. New "Fleet" tab
+  in the UI, first in the nav — the one tab that is cross-instance by
+  design and never gates on an instance being selected.
+  - Recent-activity feed required a live correction mid-design: an
+    unfiltered `audit.query` feed is ~100% `AUTHENTICATION`/`LOGOUT`
+    self-noise from the plugin's own RO/RW polling logins. Filtering those
+    two events out (two ANDed `!=` filters, confirmed live — not the
+    untested `nin` operator) surfaces the genuinely actionable entries:
+    a human calling TrueNAS's admin UI directly, or the plugin's own RW
+    writes.
+- **F4a — service status (read-only)**: new `GET services` route +
+  `subsystems/services.py` (`service.query`). Flags a service that's
+  `enable: true` but not `RUNNING` as unhealthy (a crashed/manually-stopped
+  SMB/NFS/iSCSI service an operator would otherwise only discover from a
+  client complaining).
+- **F4b (start/stop/restart) deliberately NOT implemented**: verified live
+  that `service.start`/`stop`/`restart`/`update` are invisible to
+  `core.get_methods` under both the current RO key (`SERVICE_READ` only)
+  and RW key (granular `DATASET_*`/`SNAPSHOT_*` roles, no `SERVICE_*` at
+  all). The real gating role is the builtin `SERVICE_WRITE` — granting it
+  to the RW key is a deliberate TrueNAS-side privilege change for the
+  operator to decide on, not something this change makes silently.
+- 273 tests (up from 246), all green.
+
 ## [0.3.1] - 2026-07-20 (QA fable pre-flight — before the first real write against `.64`)
 
 A third QA pass (qa-auditor + silent-failure-hunter, both on Fable, as a

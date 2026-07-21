@@ -103,3 +103,25 @@ def test_load_config_syncs_selected_instance_after_auto_select():
     assert "document.getElementById('instance-select')" in load_config
     assert 'select.value !== state.selectedInstance' in load_config
     assert 'state.selectedInstance = select.value' in load_config
+
+
+def test_fleet_tab_exists_and_is_wired_cross_instance():
+    """F3 (2026-07-20): Fleet is a NEW tab that shows ALL configured
+    instances at once — it must never gate on state.selectedInstance the
+    way every other tab does, and must call the fleet route with no
+    instance_id query param."""
+    html = _read_ui()
+    assert 'data-tab="fleet"' in html
+    assert 'id="tab-fleet"' in html
+    assert "fleet: 'fleet-body'" in html
+    assert "if (tab === 'fleet')" in html
+    assert "api('fleet')" in html
+    assert 'function renderFleet(body, payload)' in html
+
+
+def test_fleet_tab_is_never_cached_client_side():
+    """Server already TTL-caches the /fleet route (15s) — the client must
+    still refetch on every tab click rather than freezing on a stale
+    snapshot, mirroring Overview/Pools' NEVER_CACHE_TABS treatment."""
+    html = _read_ui()
+    assert "var NEVER_CACHE_TABS = { fleet: true," in html

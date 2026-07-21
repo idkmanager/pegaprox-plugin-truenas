@@ -164,6 +164,7 @@
 </header>
 
 <nav id="tabs">
+  <button data-tab="fleet"><svg class="tab-icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Fleet</button>
   <button data-tab="overview" class="active"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>Overview</button>
   <button data-tab="pools"><svg class="tab-icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>Pools &amp; Discos</button>
   <button data-tab="datasets"><svg class="tab-icon" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>Datasets</button>
@@ -175,6 +176,7 @@
 </nav>
 
 <main>
+  <section class="tab" id="tab-fleet"><div id="fleet-body" class="empty">Cargando…</div></section>
   <section class="tab active" id="tab-overview"><div id="ov-body" class="empty">Elegí una instancia arriba para ver su estado.</div></section>
   <section class="tab" id="tab-pools"><div id="pools-body" class="empty">Elegí una instancia arriba para ver sus pools.</div></section>
   <section class="tab" id="tab-datasets">
@@ -580,6 +582,7 @@
   }
 
   var TAB_BODY_ID = {
+    fleet: 'fleet-body',
     overview: 'ov-body', pools: 'pools-body', datasets: 'datasets-body',
     snapshots: 'snapshots-body', shares: 'shares-body',
     replication: 'replication-body', apps: 'apps-body',
@@ -597,7 +600,7 @@
   // than showing a stale % from whenever the tab was first opened. Every
   // other F1 tab is fetched once per instance and cached (nothing in it
   // changes second-to-second the way scan progress does).
-  var NEVER_CACHE_TABS = { overview: true, pools: true };
+  var NEVER_CACHE_TABS = { fleet: true, overview: true, pools: true };
 
   function networkErrorMessage(e) {
     return 'Error de red: ' + (e && e.message ? e.message : e);
@@ -608,6 +611,29 @@
     var bodyId = TAB_BODY_ID[tab];
     if (!bodyId) return;
     var body = document.getElementById(bodyId);
+
+    // Fleet is cross-instance by design — it must never gate on
+    // state.selectedInstance the way every other tab does below (it has
+    // no meaning here; Fleet shows ALL configured instances at once).
+    if (tab === 'fleet') {
+      if (state.loadedTabs.fleet && !NEVER_CACHE_TABS.fleet) return;
+      body.className = 'loading';
+      body.textContent = 'Cargando…';
+      api('fleet').then(function (res) {
+        if (res.status !== 200) {
+          body.className = 'empty';
+          body.innerHTML = esc((res.data && res.data.error) || 'error');
+          return;
+        }
+        renderFleet(body, res.data);
+        state.loadedTabs.fleet = true;
+      }).catch(function (e) {
+        body.className = 'empty';
+        body.textContent = networkErrorMessage(e);
+      });
+      return;
+    }
+
     if (!state.selectedInstance) {
       body.className = 'empty';
       body.innerHTML = 'Elegí una instancia arriba.';
@@ -715,6 +741,98 @@
     return '<div class="pool-row ' + (ok ? 'ok' : 'warn') + '">' + ICONS[ok ? 'check' : 'warn'] +
       '<span class="pool-row-label">' + esc(label) + '</span>' +
       '<span class="pool-row-value">' + esc(value) + '</span></div>';
+  }
+
+  function formatEpochMs(dateField) {
+    var ms = dateField && dateField['$date'];
+    if (!ms) return '?';
+    return new Date(ms).toLocaleString();
+  }
+
+  function fleetStatusClass(inst) {
+    if (!inst.reachable) return 'stat-err';
+    if ((inst.unhealthy_pools && inst.unhealthy_pools.length) ||
+        inst.critical_alert_count ||
+        (inst.down_services && inst.down_services.length)) return 'stat-warn';
+    return 'stat-ok';
+  }
+
+  function renderFleet(body, payload) {
+    body.className = '';
+    var agg = payload.aggregate || {};
+    var instances = payload.instances || [];
+    if (!instances.length) {
+      body.className = 'empty';
+      body.innerHTML = payload.skipped_no_api_key
+        ? 'Hay instancias configuradas pero sin api_key_ro — agregá una desde Settings.'
+        : 'No hay instancias configuradas — agregá la primera desde Settings.';
+      return;
+    }
+
+    var html = updatedAtHtml();
+    html += '<div class="bento">';
+    html += '<div class="card"><div class="stat-label">' + ICONS.system + 'Instancias</div>' +
+      '<div class="stat">' + agg.instance_count + '</div>' +
+      '<div>' + agg.healthy_count + ' OK · ' + agg.degraded_count + ' degradada(s) · ' +
+      agg.unreachable_count + ' caída(s)</div></div>';
+    html += '<div class="card ' + (agg.capacity_pct != null && agg.capacity_pct >= 80 ? 'stat-warn' : 'stat-ok') +
+      '"><div class="stat-label">' + ICONS.pools + 'Capacidad agregada</div>' +
+      '<div class="stat">' + (agg.capacity_pct != null ? agg.capacity_pct.toFixed(1) + '%' : '?') + '</div>' +
+      '<div>' + formatBytes(agg.capacity_used) + ' de ' + formatBytes(agg.capacity_size) + '</div></div>';
+    html += '<div class="card ' + (agg.total_alerts ? 'stat-warn' : 'stat-ok') +
+      '"><div class="stat-label">' + ICONS.alerts + 'Alertas fleet-wide</div>' +
+      '<div class="stat">' + agg.total_alerts + '</div></div>';
+    html += '</div>';
+
+    html += '<div class="pool-grid">';
+    instances.forEach(function (inst) {
+      html += '<div class="card pool-card ' + fleetStatusClass(inst) + '">';
+      html += '<h2>' + esc(inst.name) + '</h2>';
+      html += '<div class="subtab-hint">' + esc(inst.client_id) + '</div>';
+      if (!inst.reachable) {
+        html += poolRow(false, 'Estado', 'no alcanzable');
+        if (inst.connect_error) html += '<div class="subtab-hint">' + esc(inst.connect_error) + '</div>';
+      } else {
+        var unhealthyPools = inst.unhealthy_pools || [];
+        var downServices = inst.down_services || [];
+        html += poolRow(!unhealthyPools.length, 'Pools',
+          inst.pool_count + ' (' + unhealthyPools.length + ' con problemas)');
+        html += poolRow(!inst.critical_alert_count, 'Alertas críticas', inst.critical_alert_count || 0);
+        html += poolRow(!downServices.length, 'Servicios caídos',
+          downServices.length ? downServices.join(', ') : 'ninguno');
+        var pct = inst.capacity_size ? (inst.capacity_used / inst.capacity_size * 100) : 0;
+        html += poolRow(pct < 80, 'Uso',
+          formatBytes(inst.capacity_used) + ' / ' + formatBytes(inst.capacity_size) +
+          (inst.capacity_size ? ' (' + pct.toFixed(1) + '%)' : ''));
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+
+    if (agg.top_pools && agg.top_pools.length) {
+      html += '<div class="card"><h2>Pools con mayor uso</h2><table><thead><tr>' +
+        '<th>Instancia</th><th>Pool</th><th>Uso</th></tr></thead><tbody>';
+      agg.top_pools.forEach(function (p) {
+        html += '<tr><td>' + esc(p.instance_name) + '</td><td>' + esc(p.pool) + '</td>' +
+          '<td>' + p.pct.toFixed(1) + '%</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    if (agg.activity && agg.activity.length) {
+      html += '<div class="card"><h2>Actividad reciente</h2><table><thead><tr>' +
+        '<th>Cuándo</th><th>Instancia</th><th>Usuario</th><th>Evento</th></tr></thead><tbody>';
+      agg.activity.forEach(function (a) {
+        html += '<tr><td>' + esc(formatEpochMs(a.timestamp)) + '</td>' +
+          '<td>' + esc(a.instance_name) + '</td><td>' + esc(a.username) + '</td>' +
+          '<td>' + esc(a.event) + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    } else {
+      html += '<div class="subtab-hint">Sin actividad reciente relevante.</div>';
+    }
+
+    body.innerHTML = html;
   }
 
   function renderOverview(body, sysRes, poolsRes) {
